@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Large data / cache (rsync separately to HPRC)
+experiments/hyp_ssf_probe/cache/
+experiments/hyp_ssf_probe/checkpoints/
+experiments/hyp_ssf_probe/results/
+experiments/hyp_ssf_probe/figures/
+experiments/hyp_ssf_probe/weights/
+
+# Logs
+experiments/hyp_ssf_probe/*.txt
+experiments/hyp_ssf_probe/*.log
+
+# Model weight dirs (ProTrek, etc.)
+experiments/ProTrek/weights/
+experiments/ProTrek/faiss_index/
+Hypoclip/.conda_hypoclip/
+
+# Claude local settings (machine-specific)
+.claude/settings.local.json
+
+# Unrelated sub-projects (separate repos)
+Hypoclip/
+HyperGuide/
+experiments/ProTrek/
+protein_segmentation/
+visualization/
+
+# Nextflow pipeline artifacts
+work/
+.nextflow/
+.nextflow.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
