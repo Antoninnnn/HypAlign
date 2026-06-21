@@ -38,6 +38,26 @@ python run_finetune_go.py             # 50 epochs, requires ≥20 GB GPU
 Downloaded automatically from `mila-intel/ProtST-GeneOntology-MF` on first run
 and cached in `experiments/hyp_ssf_probe/cache/`.
 
+## Reproducing on HPRC (TAMU Grace cluster)
+
+```bash
+# 1. Clone and set up environment
+git clone git@github.com:Antoninnnn/HypAlign.git $SCRATCH/HypAlign
+cd $SCRATCH/HypAlign
+conda env create -f environment.yml          # creates 'hypalign' env
+
+# 2. Pre-fetch models and data on login node (no GPU needed, ~10 min)
+conda activate hypalign
+python experiments/hyp_ssf_probe/scripts/prefetch_data.py
+
+# 3. Submit probe job (ESM-2 650M frozen, 4 geometry conditions, ~4 h on A100)
+cd experiments/hyp_ssf_probe/scripts
+sbatch submit_probe_650m.sh
+```
+
+Results land in `experiments/hyp_ssf_probe/results/results_go.json`.
+Checkpoints in `experiments/hyp_ssf_probe/checkpoints/`.
+
 ## References
 
 - ProtST: Zhang et al. 2023 — protein text pre-training baseline
