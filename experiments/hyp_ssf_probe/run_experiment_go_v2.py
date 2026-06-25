@@ -5,21 +5,27 @@ Hyperbolic SSF Probe v2 — Clean geometry comparison
 Fixes three confounds from v1:
   1. Encoder:   ESM2-650M frozen (vs 8M) — stronger protein features
   2. Projector: 2-layer MLP (vs linear) — nonlinear capacity before exp_map0
-  3. Loss:      BCE over all 489 GO terms (vs InfoNCE) — no false negatives
+  3. Loss:      BCE or MulSupCon over all 489 GO terms (vs InfoNCE)
 
-All four geometry conditions are otherwise identical, so the only variable
+Four geometry conditions are otherwise identical, so the only variable
 is the embedding space geometry.
 
-Conditions:
-  1. Euclidean      — MLP → L2-norm, cosine sim, BCE
-  2. Hyp            — MLP → exp_map0, Lorentz dist, BCE
+Conditions (run twice, once per loss):
+  1. Euclidean      — MLP → L2-norm, cosine sim
+  2. Hyp            — MLP → exp_map0, Lorentz dist
   3. Hyp+MERU λ=0.5 — + entailment cone loss (GO→protein)
   4. Hyp+MERU+DAG   — + DAG is_a edges (parent→child GO)
+
+Loss options:
+  --loss bce         Binary cross-entropy over all 489 labels (default)
+  --loss mulsupcon   MulSupCon (Zhang & Wu, AAAI 2024): per-label softmax
+                     contrastive loss — directly optimises the retrieval ranking
 
 Run:
     conda activate hypalign
     cd experiments/hyp_ssf_probe
-    python -u run_experiment_go_v2.py
+    python -u run_experiment_go_v2.py --loss bce
+    python -u run_experiment_go_v2.py --loss mulsupcon
 """
 
 from __future__ import annotations
@@ -27,7 +33,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 import time
 from pathlib import Path
 
@@ -48,10 +53,10 @@ ESM2_HF       = "facebook/esm2_t33_650M_UR50D"
 PUBMEDBERT_HF = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"
 
 GO_TERMS    = 489
-ESM_DIM     = 1280       # ESM2-650M hidden dim
+ESM_DIM     = 1280
 BERT_DIM    = 768
-PROJ_HIDDEN = 512        # MLP hidden layer
-PROJ_DIM    = 256        # output embedding dim
+PROJ_HIDDEN = 512
+PROJ_DIM    = 256
 BATCH_SIZE  = 128
 LR          = 3e-4
 EPOCHS      = 60
@@ -71,19 +76,11 @@ def exp_map0(x, curv):
     xn = x.norm(dim=-1, keepdim=True).clamp(min=EPS)
     return torch.sinh((sqrt_c * xn).clamp(max=math.asinh(2.0**15))) * x / xn
 
-def log_map0(x, curv):
-    sqrt_c = curv.sqrt()
-    xn = x.norm(dim=-1, keepdim=True).clamp(min=EPS)
-    return (torch.asinh(sqrt_c * xn) / (sqrt_c * xn + EPS)) * x
-
 def pairwise_dist(x, y, curv):
     xt = _time(x, curv).unsqueeze(1)
     yt = _time(y, curv).unsqueeze(0)
     inner = x @ y.T - xt * yt
     return torch.acosh((-curv * inner).clamp(min=1.0 + EPS)) / curv.sqrt()
-
-def poincare_radius(x, curv):
-    return x.norm(dim=-1) / (_time(x, curv) + 1.0 / curv.sqrt())
 
 # ── Projector heads (MLP) ─────────────────────────────────────────────────────
 
@@ -159,26 +156,36 @@ class GOProbeV2(nn.Module):
 # ── Losses ────────────────────────────────────────────────────────────────────
 
 def bce_loss(logits, targets):
-    """Dense multi-label BCE over all 489 GO terms — no false negatives."""
+    """Dense multi-label BCE over all 489 GO terms."""
     return F.binary_cross_entropy_with_logits(logits, targets.float())
 
 
+def mulsupcon_loss(logits, targets):
+    """
+    MulSupCon: Zhang & Wu, AAAI 2024.
+
+    For every positive (protein_i, GO_j) pair, compute the softmax cross-entropy
+    of ranking GO_j first among all 489 GO terms.  Normalise by the total number
+    of positive pairs in the batch (Eq. 4/5 in the paper).  The 1/|y^(i)|
+    per-sample weight is intentionally omitted — ablation Table 8 shows it hurts.
+
+    Directly optimises the retrieval ranking metric (Fmax/AUPR), unlike BCE which
+    optimises per-label calibration independently.
+    """
+    log_softmax = F.log_softmax(logits, dim=1)          # [B, 489]
+    n_pos = targets.float().sum().clamp(min=1)
+    return -(log_softmax * targets.float()).sum() / n_pos
+
+
 def meru_loss(probe, seq_emb, go_emb):
-    """
-    Entailment cone: GO term (general) should entail protein (specific).
-    oxy_angle(go, seq) ≤ half_aperture(go)
-    """
-    curv     = probe.curv
-    sqrt_c   = curv.sqrt()
-    r_min    = 1.0 / sqrt_c   # minimum Poincaré radius for cone formula
+    """Entailment cone: GO term (general) should entail protein (specific)."""
+    curv   = probe.curv
+    sqrt_c = curv.sqrt()
+    r_min  = 1.0 / sqrt_c
 
-    go_norm  = go_emb.norm(dim=-1).clamp(min=EPS)
-    seq_norm = seq_emb.norm(dim=-1).clamp(min=EPS)
-
-    # Half-aperture of go cone
+    go_norm = go_emb.norm(dim=-1).clamp(min=EPS)
     aperture = torch.asin((2 * r_min / go_norm).clamp(max=1.0 - EPS))
 
-    # Exterior angle at go in O-go-seq triangle
     go_t  = _time(go_emb,  curv)
     seq_t = _time(seq_emb, curv)
     cos_num = go_t * curv * (go_emb * seq_emb).sum(-1) - seq_t
@@ -193,7 +200,7 @@ def dag_loss(probe, go_emb, dag_edges):
     """Parent GO term should entail child GO term."""
     if not dag_edges:
         return go_emb.new_tensor(0.0)
-    parents = go_emb[[e[0] for e in dag_edges]]
+    parents  = go_emb[[e[0] for e in dag_edges]]
     children = go_emb[[e[1] for e in dag_edges]]
     return meru_loss(probe, children, parents)
 
@@ -214,8 +221,8 @@ def compute_esm2_features(splits, device):
 
     feats = {}
     for split, data in splits.items():
-        seqs  = data["seqs"]
-        embs  = []
+        seqs = data["seqs"]
+        embs = []
         with torch.no_grad():
             for i in range(0, len(seqs), 16):
                 batch = seqs[i:i+16]
@@ -295,7 +302,7 @@ def evaluate(probe, seq_feats, go_emb_table, tgt, device):
     go_r = probe.encode_text(go_emb_table.to(device)).cpu()
     rows = []
     for i in range(0, len(seq_feats), 256):
-        sr  = probe.encode_seq(seq_feats[i:i+256].to(device)).cpu()
+        sr = probe.encode_seq(seq_feats[i:i+256].to(device)).cpu()
         if probe.geometry == "lorentz":
             rows.append(-pairwise_dist(sr, go_r, probe.curv.detach().cpu()))
         else:
@@ -309,14 +316,13 @@ def evaluate(probe, seq_feats, go_emb_table, tgt, device):
 
 def train_one(label, geometry, lam_meru, lam_dag,
               esm_feats, go_emb_raw, splits, dag_edges, device,
-              n_epochs=EPOCHS, proj_dim=PROJ_DIM):
+              loss_type="bce", n_epochs=EPOCHS, proj_dim=PROJ_DIM):
 
     seq_train = esm_feats["train"]
     tgt_train = splits["train"]["targets"].float()
     seq_val   = esm_feats["validation"]
     tgt_val   = splits["validation"]["targets"].float()
 
-    # Filter empty annotations in training
     valid = tgt_train.sum(1) > 0
     seq_train, tgt_train = seq_train[valid], tgt_train[valid]
 
@@ -328,8 +334,7 @@ def train_one(label, geometry, lam_meru, lam_dag,
     probe = GOProbeV2(ESM_DIM, BERT_DIM, PROJ_HIDDEN, proj_dim, geometry).to(device)
     opt   = torch.optim.AdamW(probe.parameters(), lr=LR, weight_decay=1e-4)
 
-    # Pre-encode all 489 GO terms once and keep on device (small, 489×768)
-    go_emb_raw_dev = go_emb_raw.to(device)
+    go_emb_raw_dev = go_emb_raw.to(device)   # [489, 768] frozen PubMedBERT outputs
 
     best_fmax, best_state = 0.0, None
     t0 = time.time()
@@ -338,20 +343,23 @@ def train_one(label, geometry, lam_meru, lam_dag,
         probe.train()
         epoch_loss = 0.0
 
-        # Re-encode GO terms each epoch (text_head changes)
-        go_emb = probe.encode_text(go_emb_raw_dev).detach()   # [489, D]
-
         for seq_b, tgt_b in loader:
             seq_b, tgt_b = seq_b.to(device), tgt_b.to(device)
 
-            seq_emb = probe.encode_seq(seq_b)              # [B, D]
-            logits  = probe.similarity(seq_emb, go_emb)   # [B, 489]
-            loss    = bce_loss(logits, tgt_b)
+            # Encode GO terms inside the step so text_head receives gradients.
+            # 489 × MLP(768→512→256) is fast relative to seq processing.
+            go_emb  = probe.encode_text(go_emb_raw_dev)    # [489, D]
+            seq_emb = probe.encode_seq(seq_b)               # [B, D]
+            logits  = probe.similarity(seq_emb, go_emb)     # [B, 489]
+
+            if loss_type == "mulsupcon":
+                loss = mulsupcon_loss(logits, tgt_b)
+            else:
+                loss = bce_loss(logits, tgt_b)
 
             if lam_meru > 0:
-                # Sample one positive GO term per protein for MERU
                 pos_idx = torch.multinomial(tgt_b.float().clamp(min=1e-6), 1).squeeze(1)
-                go_pos  = go_emb[pos_idx]                  # [B, D]
+                go_pos  = go_emb[pos_idx]
                 loss    = loss + lam_meru * meru_loss(probe, seq_emb, go_pos)
 
             if lam_dag > 0 and dag_edges:
@@ -382,28 +390,36 @@ def train_one(label, geometry, lam_meru, lam_dag,
     return best_state, best_fmax
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Conditions ────────────────────────────────────────────────────────────────
 
 CONDITIONS = [
-    # (label,              geometry,   lam_meru, lam_dag, ckpt_name)
-    ("Euclidean-v2",       "euclidean", 0.0,      0.0,    "v2_Euclidean.pt"),
-    ("Hyp-v2",             "lorentz",   0.0,      0.0,    "v2_Hyp.pt"),
-    ("Hyp+MERU-v2",        "lorentz",   0.5,      0.0,    "v2_HyppMERU.pt"),
-    ("Hyp+MERU+DAG-v2",    "lorentz",   0.5,      0.5,    "v2_HyppMERUpDAG.pt"),
+    # (label_suffix,    geometry,    lam_meru, lam_dag)
+    ("Euclidean",       "euclidean", 0.0,      0.0),
+    ("Hyp",             "lorentz",   0.0,      0.0),
+    ("Hyp+MERU",        "lorentz",   0.5,      0.0),
+    ("Hyp+MERU+DAG",    "lorentz",   0.5,      0.5),
 ]
 
 
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--loss",     type=str, default="bce",
+                        choices=["bce", "mulsupcon"],
+                        help="bce: binary cross-entropy | mulsupcon: Zhang & Wu AAAI-24")
     parser.add_argument("--epochs",   type=int, default=EPOCHS)
     parser.add_argument("--proj-dim", type=int, default=PROJ_DIM)
     parser.add_argument("--cond",     type=str, default=None,
-                        help="Run only this condition label (substring match)")
+                        help="Run only conditions whose label contains this substring")
     args = parser.parse_args()
 
+    pfx = "msc" if args.loss == "mulsupcon" else "bce"
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}  epochs={args.epochs}  proj_dim={args.proj_dim}  "
-          f"batch={BATCH_SIZE}  encoder={ESM2_HF}\n", flush=True)
+    print(f"Device: {device}  loss={args.loss}  epochs={args.epochs}  "
+          f"proj_dim={args.proj_dim}  batch={BATCH_SIZE}  encoder={ESM2_HF}\n",
+          flush=True)
 
     # ── Load data ────────────────────────────────────────────────────────────
     print("[1/4] Loading dataset ...")
@@ -418,7 +434,7 @@ def main():
     esm_feats = compute_esm2_features(splits, device)
 
     print("\n[3/4] Computing GO term embeddings ...")
-    go_emb_raw = compute_go_embeddings(vocab, device)   # [489, 768]
+    go_emb_raw = compute_go_embeddings(vocab, device)
     print(f"  GO embeddings: {go_emb_raw.shape}")
 
     print("\n[4/4] Loading GO DAG edges ...")
@@ -430,26 +446,29 @@ def main():
 
     # ── Train all conditions ──────────────────────────────────────────────────
     results = {}
-    for label, geometry, lam_meru, lam_dag, ckpt_name in CONDITIONS:
-        if args.cond and args.cond not in label:
+    for label_suffix, geometry, lam_meru, lam_dag in CONDITIONS:
+        if args.cond and args.cond not in label_suffix:
             continue
+
+        label     = f"{label_suffix}-v2-{pfx}"
+        ckpt_name = f"v2_{pfx}_{label_suffix.replace('+', 'p').replace(' ', '_')}.pt"
 
         print(f"{'='*60}\n{label}\n{'='*60}", flush=True)
         best_state, best_val_fmax = train_one(
             label, geometry, lam_meru, lam_dag,
             esm_feats, go_emb_raw, splits, dag_edges, device,
+            loss_type=args.loss,
             n_epochs=args.epochs, proj_dim=args.proj_dim,
         )
 
-        # Save checkpoint
         ckpt_path = CKPT_DIR / ckpt_name
         torch.save({"state_dict": best_state,
                     "label": label, "geometry": geometry,
+                    "loss_type": args.loss,
                     "proj_dim": args.proj_dim,
                     "proj_hidden": PROJ_HIDDEN,
                     "esm_model": ESM2_HF}, ckpt_path)
 
-        # Test evaluation
         probe = GOProbeV2(ESM_DIM, BERT_DIM, PROJ_HIDDEN, args.proj_dim, geometry)
         probe.load_state_dict(best_state)
         probe.to(device)
@@ -460,23 +479,20 @@ def main():
 
     # ── Summary ───────────────────────────────────────────────────────────────
     if results:
-        sep = "=" * 52
+        sep = "=" * 56
         print(f"\n{sep}")
-        print(f"  {'Model':<24}  {'Fmax':>7}  {'AUPR':>7}")
-        print("-" * 52)
-
-        # v1 reference
-        print(f"  {'--- v1 reference (InfoNCE, 8M) ---':<24}")
-        v1 = {"Euclidean": (0.0748, 0.0318), "Hyp+MERU λ=0.5": (0.0828, 0.0337)}
-        for lbl, (f, a) in v1.items():
-            print(f"  {lbl:<24}  {f:>7.4f}  {a:>7.4f}")
+        print(f"  {'Model':<28}  {'Fmax':>7}  {'AUPR':>7}")
+        print("-" * 56)
+        print(f"  {'--- v1 reference (InfoNCE, ESM2-8M) ---'}")
+        for lbl, (f, a) in [("Euclidean", (0.0748, 0.0318)),
+                              ("Hyp+MERU",  (0.0828, 0.0337))]:
+            print(f"  {lbl:<28}  {f:>7.4f}  {a:>7.4f}")
         print()
-
         for lbl, r in results.items():
-            print(f"  {lbl:<24}  {r['fmax']:>7.4f}  {r['aupr']:>7.4f}")
+            print(f"  {lbl:<28}  {r['fmax']:>7.4f}  {r['aupr']:>7.4f}")
         print(sep)
 
-    out = RESULTS_DIR / "results_v2.json"
+    out = RESULTS_DIR / f"results_v2_{pfx}.json"
     with open(out, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved to {out}")
