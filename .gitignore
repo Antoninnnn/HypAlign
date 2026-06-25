@@ -9,6 +9,7 @@ __pycache__/
 experiments/hyp_ssf_probe/cache/
 experiments/hyp_ssf_probe/checkpoints/
 experiments/hyp_ssf_probe/results/
+!experiments/hyp_ssf_probe/results/*.json
 experiments/hyp_ssf_probe/figures/
 experiments/hyp_ssf_probe/weights/
 

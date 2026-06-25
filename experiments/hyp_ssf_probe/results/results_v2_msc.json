@@ -1,0 +1,18 @@
+{
+  "Euclidean-v2-msc": {
+    "fmax": 0.2089,
+    "aupr": 0.0829
+  },
+  "Hyp-v2-msc": {
+    "fmax": 0.1745,
+    "aupr": 0.0687
+  },
+  "Hyp+MERU-v2-msc": {
+    "fmax": 0.1778,
+    "aupr": 0.0723
+  },
+  "Hyp+MERU+DAG-v2-msc": {
+    "fmax": 0.1796,
+    "aupr": 0.076
+  }
+}
