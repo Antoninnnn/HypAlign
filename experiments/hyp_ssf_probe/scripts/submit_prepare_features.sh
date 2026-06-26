@@ -1,0 +1,32 @@
+#!/bin/bash
+#SBATCH --job-name=hypalign-features
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --gres=gpu:a100:1
+#SBATCH --time=02:00:00
+#SBATCH --partition=gpu
+#SBATCH --output=%x_%j.out
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=yining_yang@tamu.edu
+
+module purge
+module load GCC/12.2.0 CUDA/12.4.0 Miniconda3/23.5.2-0
+
+conda activate hypalign
+
+REPO=$SCRATCH/HypAlign
+cd $REPO
+
+echo "=== HypAlign: compute frozen encoder features ==="
+echo "Node: $(hostname)"
+echo "GPU:  $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+echo "Start: $(date)"
+
+python -u experiments/hyp_ssf_probe/scripts/prepare_features.py
+
+echo "End: $(date)"
+echo "Submit training jobs now:"
+echo "  sbatch experiments/hyp_ssf_probe/scripts/submit_probe_v2.sh"
+echo "  sbatch experiments/hyp_ssf_probe/scripts/submit_probe_v2_mulsupcon.sh"

@@ -12,6 +12,8 @@ experiments/hyp_ssf_probe/results/
 !experiments/hyp_ssf_probe/results/*.json
 experiments/hyp_ssf_probe/figures/
 experiments/hyp_ssf_probe/weights/
+# Small reference files tracked in data/ (go_mf_vocab.json, go_term_embs.pt)
+# are NOT excluded — data/ is tracked
 
 # Logs
 experiments/hyp_ssf_probe/*.txt
