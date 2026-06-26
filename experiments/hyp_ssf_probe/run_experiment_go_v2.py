@@ -51,6 +51,7 @@ for d in [CACHE_DIR, RESULTS_DIR, CKPT_DIR]:
 
 ESM2_HF       = "facebook/esm2_t33_650M_UR50D"
 PUBMEDBERT_HF = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"
+NEUML_HF      = "NeuML/pubmedbert-base-embeddings"   # sentence-embedding model; use --pooling mean
 
 GO_TERMS    = 489
 ESM_DIM     = 1280
@@ -239,15 +240,18 @@ def compute_esm2_features(splits, device):
     return feats
 
 
-def compute_go_embeddings(vocab, device):
-    cache_path = CACHE_DIR / "go_term_embs.pt"
+def compute_go_embeddings(vocab, device, text_model_hf=PUBMEDBERT_HF, pooling="cls"):
+    model_tag  = text_model_hf.replace("/", "_").replace("-", "_")
+    cache_path = CACHE_DIR / f"go_term_embs_{model_tag}_{pooling}.pt"
     if cache_path.exists():
-        return torch.load(cache_path, map_location="cpu", weights_only=True)
+        t = torch.load(cache_path, map_location="cpu", weights_only=True)
+        print(f"  [text] Using cache: {cache_path.name}  {tuple(t.shape)}")
+        return t
 
-    print(f"  [pubmedbert] Computing GO term embeddings ...")
+    print(f"  [text] Computing GO embeddings via {text_model_hf}  pooling={pooling} ...")
     from transformers import AutoTokenizer, AutoModel
-    tok   = AutoTokenizer.from_pretrained(PUBMEDBERT_HF)
-    model = AutoModel.from_pretrained(PUBMEDBERT_HF).to(device).eval()
+    tok   = AutoTokenizer.from_pretrained(text_model_hf)
+    model = AutoModel.from_pretrained(text_model_hf).to(device).eval()
     names = [f"FUNCTION: {vocab['idx_to_name'][str(i)]}." for i in range(GO_TERMS)]
     embs  = []
     with torch.no_grad():
@@ -255,10 +259,16 @@ def compute_go_embeddings(vocab, device):
             inp = tok(names[i:i+64], return_tensors="pt", padding=True,
                       truncation=True, max_length=128).to(device)
             out = model(**inp)
-            embs.append(out.last_hidden_state[:, 0].cpu())
+            if pooling == "mean":
+                mask = inp["attention_mask"].float().unsqueeze(-1)
+                vec  = (out.last_hidden_state * mask).sum(1) / mask.sum(1)
+            else:
+                vec = out.last_hidden_state[:, 0]
+            embs.append(vec.cpu())
     go_embs = torch.cat(embs)
     del model; torch.cuda.empty_cache()
     torch.save(go_embs, cache_path)
+    print(f"  Saved {cache_path.name}  {tuple(go_embs.shape)}")
     return go_embs
 
 
@@ -405,12 +415,17 @@ CONDITIONS = [
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--loss",     type=str, default="bce",
+    parser.add_argument("--loss",       type=str, default="bce",
                         choices=["bce", "mulsupcon"],
                         help="bce: binary cross-entropy | mulsupcon: Zhang & Wu AAAI-24")
-    parser.add_argument("--epochs",   type=int, default=EPOCHS)
-    parser.add_argument("--proj-dim", type=int, default=PROJ_DIM)
-    parser.add_argument("--cond",     type=str, default=None,
+    parser.add_argument("--text-model", type=str, default=PUBMEDBERT_HF,
+                        help="HuggingFace text encoder for GO term embeddings. "
+                             "Use NeuML/pubmedbert-base-embeddings with --pooling mean.")
+    parser.add_argument("--pooling",    type=str, default="cls", choices=["cls", "mean"],
+                        help="Pooling for text encoder: cls (default) or mean")
+    parser.add_argument("--epochs",     type=int, default=EPOCHS)
+    parser.add_argument("--proj-dim",   type=int, default=PROJ_DIM)
+    parser.add_argument("--cond",       type=str, default=None,
                         help="Run only conditions whose label contains this substring")
     args = parser.parse_args()
 
@@ -418,7 +433,9 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}  loss={args.loss}  epochs={args.epochs}  "
-          f"proj_dim={args.proj_dim}  batch={BATCH_SIZE}  encoder={ESM2_HF}\n",
+          f"proj_dim={args.proj_dim}  batch={BATCH_SIZE}\n"
+          f"  seq_encoder:  {ESM2_HF}\n"
+          f"  text_encoder: {args.text_model}  pooling={args.pooling}\n",
           flush=True)
 
     # ── Load data ────────────────────────────────────────────────────────────
@@ -434,7 +451,7 @@ def main():
     esm_feats = compute_esm2_features(splits, device)
 
     print("\n[3/4] Computing GO term embeddings ...")
-    go_emb_raw = compute_go_embeddings(vocab, device)
+    go_emb_raw = compute_go_embeddings(vocab, device, args.text_model, args.pooling)
     print(f"  GO embeddings: {go_emb_raw.shape}")
 
     print("\n[4/4] Loading GO DAG edges ...")
