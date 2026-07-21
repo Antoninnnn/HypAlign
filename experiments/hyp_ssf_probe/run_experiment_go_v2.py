@@ -67,6 +67,10 @@ LAMBDA_MERU = 0.5
 LAMBDA_DAG  = 0.5
 EPS         = 1e-8
 
+
+def model_tag(model_name: str) -> str:
+    return model_name.split("/")[-1].replace("/", "_")
+
 # ── Lorentz math ──────────────────────────────────────────────────────────────
 
 def _time(x, curv):
@@ -152,6 +156,17 @@ class GOProbeV2(nn.Module):
                    * self.log_temp.exp()
         else:
             return seq_emb @ go_emb.T * self.log_temp.exp()
+
+    def stabilize_(self):
+        with torch.no_grad():
+            self.log_temp.data.nan_to_num_(nan=math.log(TEMPERATURE), posinf=4.0, neginf=-8.0)
+            self.log_temp.data.clamp_(min=-8.0, max=4.0)
+            if self.geometry == "lorentz":
+                self.log_curv.data.nan_to_num_(nan=math.log(CURV_INIT), posinf=math.log(10.0),
+                                               neginf=math.log(0.1))
+                self.log_curv.data.clamp_(min=math.log(0.1), max=math.log(10.0))
+                self.seq_head.clamp()
+                self.text_head.clamp()
 
 
 # ── Losses ────────────────────────────────────────────────────────────────────
@@ -252,7 +267,7 @@ def compute_go_embeddings(vocab, device, text_model_hf=PUBMEDBERT_HF, pooling="c
     from transformers import AutoTokenizer, AutoModel
     tok   = AutoTokenizer.from_pretrained(text_model_hf)
     model = AutoModel.from_pretrained(text_model_hf).to(device).eval()
-    names = [f"FUNCTION: {vocab['idx_to_name'][str(i)]}." for i in range(GO_TERMS)]
+    names = [f"FUNCTION: {name}." for name in get_go_names(vocab)]
     embs  = []
     with torch.no_grad():
         for i in range(0, len(names), 64):
@@ -270,6 +285,21 @@ def compute_go_embeddings(vocab, device, text_model_hf=PUBMEDBERT_HF, pooling="c
     torch.save(go_embs, cache_path)
     print(f"  Saved {cache_path.name}  {tuple(go_embs.shape)}")
     return go_embs
+
+
+@torch.no_grad()
+def mean_pool_text(model, enc):
+    out = model(**enc).last_hidden_state
+    mask = enc["attention_mask"].unsqueeze(-1).float()
+    return (out * mask).sum(1) / mask.sum(1).clamp(min=1)
+
+
+def get_go_names(vocab):
+    if "go_names" in vocab:
+        return vocab["go_names"]
+    if "idx_to_name" in vocab:
+        return [vocab["idx_to_name"][str(i)] for i in range(GO_TERMS)]
+    raise KeyError("GO vocab must contain either 'go_names' or 'idx_to_name'.")
 
 
 def load_dag_edges(vocab):
@@ -306,6 +336,30 @@ def compute_fmax_aupr(sim_np, tgt_np):
     return best_f, aupr
 
 
+def average_precision_binary(y_true, scores):
+    y_true = y_true.astype(np.float32)
+    n_pos = float(y_true.sum())
+    if n_pos <= 0:
+        return float("nan")
+    order = np.argsort(-scores)
+    hits = y_true[order]
+    hit_rank = np.flatnonzero(hits > 0.5)
+    if len(hit_rank) == 0:
+        return 0.0
+    cum_hits = np.cumsum(hits)[hit_rank]
+    precision_at_hits = cum_hits / (hit_rank + 1)
+    return float(precision_at_hits.sum() / n_pos)
+
+
+def compute_macro_aupr(sim_np, tgt_np):
+    aps = [
+        average_precision_binary(tgt_np[:, j], sim_np[:, j])
+        for j in range(tgt_np.shape[1])
+        if tgt_np[:, j].sum() > 0
+    ]
+    return float(np.mean(aps)) if aps else 0.0
+
+
 @torch.no_grad()
 def evaluate(probe, seq_feats, go_emb_table, tgt, device):
     probe.eval()
@@ -319,7 +373,8 @@ def evaluate(probe, seq_feats, go_emb_table, tgt, device):
             rows.append(sr @ go_r.T)
     sim    = torch.cat(rows).numpy().astype(np.float32)
     tgt_np = tgt.numpy().astype(np.float32)
-    return compute_fmax_aupr(sim, tgt_np)
+    fmax, aupr = compute_fmax_aupr(sim, tgt_np)
+    return fmax, aupr, compute_macro_aupr(sim, tgt_np)
 
 
 # ── Training ──────────────────────────────────────────────────────────────────
@@ -346,8 +401,10 @@ def train_one(label, geometry, lam_meru, lam_dag,
 
     go_emb_raw_dev = go_emb_raw.to(device)   # [489, 768] frozen PubMedBERT outputs
 
-    best_fmax, best_state = 0.0, None
+    best_fmax = -1.0
+    best_state = {k: v.cpu().clone() for k, v in probe.state_dict().items()}
     t0 = time.time()
+    stop_early = False
 
     for epoch in range(1, n_epochs + 1):
         probe.train()
@@ -357,10 +414,11 @@ def train_one(label, geometry, lam_meru, lam_dag,
             seq_b, tgt_b = seq_b.to(device), tgt_b.to(device)
 
             # Encode GO terms inside the step so text_head receives gradients.
+            # Encode GO terms inside the step so text_head receives gradients.
             # 489 × MLP(768→512→256) is fast relative to seq processing.
             go_emb  = probe.encode_text(go_emb_raw_dev)    # [489, D]
-            seq_emb = probe.encode_seq(seq_b)               # [B, D]
-            logits  = probe.similarity(seq_emb, go_emb)     # [B, 489]
+            seq_emb = probe.encode_seq(seq_b)              # [B, D]
+            logits  = probe.similarity(seq_emb, go_emb)    # [B, 489]
 
             if loss_type == "mulsupcon":
                 loss = mulsupcon_loss(logits, tgt_b)
@@ -375,23 +433,32 @@ def train_one(label, geometry, lam_meru, lam_dag,
             if lam_dag > 0 and dag_edges:
                 loss = loss + lam_dag * dag_loss(probe, go_emb, dag_edges)
 
+            if not torch.isfinite(loss):
+                print(f"  [{label}] non-finite loss detected at epoch {epoch}; "
+                      f"stopping this condition early and keeping best finite checkpoint.",
+                      flush=True)
+                stop_early = True
+                break
+
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(probe.parameters(), 1.0)
             opt.step()
-            if probe.geometry == "lorentz":
-                probe.seq_head.clamp()
-                probe.text_head.clamp()
+            probe.stabilize_()
 
             epoch_loss += loss.item()
 
+        if stop_early:
+            break
+
         if epoch % 5 == 0 or epoch == n_epochs:
-            fmax, aupr = evaluate(probe, seq_val, go_emb_raw, tgt_val, device)
+            fmax, aupr, macro_aupr = evaluate(probe, seq_val, go_emb_raw, tgt_val, device)
             elapsed = time.time() - t0
             kstr = f"  κ={probe.curv.item():.3f}" if geometry == "lorentz" else ""
             print(f"  [{label}] ep {epoch:3d}/{n_epochs}  "
                   f"loss={epoch_loss/len(loader):.4f}  "
-                  f"val_Fmax={fmax:.4f}  val_AUPR={aupr:.4f}{kstr}  "
+                  f"val_Fmax={fmax:.4f}  val_AUPR={aupr:.4f}  "
+                  f"val_macro_AUPR={macro_aupr:.4f}{kstr}  "
                   f"({elapsed:.0f}s)", flush=True)
             if fmax > best_fmax:
                 best_fmax  = fmax
@@ -489,24 +556,30 @@ def main():
         probe = GOProbeV2(ESM_DIM, BERT_DIM, PROJ_HIDDEN, args.proj_dim, geometry)
         probe.load_state_dict(best_state)
         probe.to(device)
-        fmax, aupr = evaluate(probe, seq_test, go_emb_raw, tgt_test, device)
+        fmax, aupr, macro_aupr = evaluate(probe, seq_test, go_emb_raw, tgt_test, device)
         print(f"\n  Best val Fmax={best_val_fmax:.4f}  "
-              f"Test Fmax={fmax:.4f}  Test AUPR={aupr:.4f}\n", flush=True)
-        results[label] = {"fmax": round(fmax, 4), "aupr": round(aupr, 4)}
+              f"Test Fmax={fmax:.4f}  Test AUPR={aupr:.4f}  "
+              f"Test macro_AUPR={macro_aupr:.4f}\n", flush=True)
+        results[label] = {
+            "fmax": round(fmax, 4),
+            "aupr": round(aupr, 4),
+            "macro_aupr": round(macro_aupr, 4),
+        }
 
     # ── Summary ───────────────────────────────────────────────────────────────
     if results:
         sep = "=" * 56
         print(f"\n{sep}")
-        print(f"  {'Model':<28}  {'Fmax':>7}  {'AUPR':>7}")
-        print("-" * 56)
-        print(f"  {'--- v1 reference (InfoNCE, ESM2-8M) ---'}")
-        for lbl, (f, a) in [("Euclidean", (0.0748, 0.0318)),
-                              ("Hyp+MERU",  (0.0828, 0.0337))]:
-            print(f"  {lbl:<28}  {f:>7.4f}  {a:>7.4f}")
+        print(f"  {'Model':<24}  {'Fmax':>7}  {'AUPR':>7}  {'mAUPR':>7}")
+        print("-" * 52)
+        print(f"  {'--- v1 reference (InfoNCE, 8M) ---':<24}")
+        v1 = {"Euclidean": (0.0748, 0.0318), "Hyp+MERU λ=0.5": (0.0828, 0.0337)}
+        for lbl, (f, a) in v1.items():
+            print(f"  {lbl:<24}  {f:>7.4f}  {a:>7.4f}  {'n/a':>7}")
         print()
         for lbl, r in results.items():
-            print(f"  {lbl:<28}  {r['fmax']:>7.4f}  {r['aupr']:>7.4f}")
+            print(f"  {lbl:<24}  {r['fmax']:>7.4f}  "
+                  f"{r['aupr']:>7.4f}  {r['macro_aupr']:>7.4f}")
         print(sep)
 
     out = RESULTS_DIR / f"results_v2_{pfx}.json"

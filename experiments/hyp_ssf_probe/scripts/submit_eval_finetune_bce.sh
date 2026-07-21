@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=hypalign-probe-v2-msc
+#SBATCH --job-name=hypalign-eval-ft-bce
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=96G
 #SBATCH --gres=gpu:a100:1
-#SBATCH --time=08:00:00
+#SBATCH --time=02:00:00
 #SBATCH --partition=gpu
 #SBATCH --output=/scratch/group/aibi/Protein_LLM/HypAlign/experiments/hyp_ssf_probe/logs/%x_%j.out
 #SBATCH --mail-type=END,FAIL
@@ -42,23 +42,24 @@ mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE"
 mkdir -p "$XDG_CACHE_HOME" "$TORCH_HOME" "$PIP_CACHE_DIR" "$CONDA_PKGS_DIRS" "$MPLCONFIGDIR"
 
 cd "$REPO"
-mkdir -p experiments/hyp_ssf_probe/logs \
-         experiments/hyp_ssf_probe/cache \
-         experiments/hyp_ssf_probe/checkpoints \
-         experiments/hyp_ssf_probe/results
+mkdir -p experiments/hyp_ssf_probe/logs experiments/hyp_ssf_probe/results
 
-echo "=== HypAlign Probe v2 (ESM2-650M, MLP, MulSupCon, NeuML mean) ==="
+echo "=== Evaluate saved ESM2-650M FT BCE checkpoint ==="
 echo "Node: $(hostname)"
-echo "GPU:  $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+echo "GPU:"
+nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo "Start: $(date)"
 echo "Repo: $REPO"
 echo "Conda env: $CONDA_ENV"
 echo "HF_HOME: $HF_HOME"
 
 conda run --no-capture-output -p "$CONDA_ENV" python -u \
-    experiments/hyp_ssf_probe/run_experiment_go_v2.py \
-    --loss mulsupcon \
-    --text-model NeuML/pubmedbert-base-embeddings \
-    --pooling mean
+    experiments/hyp_ssf_probe/evaluate_finetune_checkpoint.py \
+    --checkpoint experiments/hyp_ssf_probe/checkpoints/best_ESM2-650M-FT-BCE.pt \
+    --batch-size 8 \
+    --num-workers 2 \
+    --split both \
+    --out experiments/hyp_ssf_probe/results/eval_best_ESM2-650M-FT-BCE.json \
+    --amp
 
 echo "End: $(date)"

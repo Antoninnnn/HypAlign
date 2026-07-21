@@ -12,18 +12,43 @@
 #SBATCH --mail-user=yining_yang@tamu.edu
 
 module purge
-module load GCC/12.2.0 CUDA/12.4.0 Miniconda3/23.5.2-0
+ml GCC/12.2.0 CUDA/12.4.0 Anaconda3
 
-conda activate hypalign
+umask 0002
 
-# Repo root assumed at $SCRATCH/HypAlign (adjust if different)
-REPO=$SCRATCH/HypAlign
+export PYTHONNOUSERSITE=1
+REPO=/scratch/group/aibi/Protein_LLM/HypAlign
+SHARED_ROOT=$REPO
+CONDA_ENV=$REPO/.conda/envs/hypalign
+
+export HYPALIGN_SHARED_ROOT=$SHARED_ROOT
+export HYPALIGN_CACHE_ROOT=$SHARED_ROOT/.cache
+export HF_HOME=$HYPALIGN_CACHE_ROOT/huggingface
+export HF_HUB_CACHE=$HF_HOME
+export HF_DATASETS_CACHE=$HF_HOME/datasets
+export TRANSFORMERS_CACHE=$HF_HOME
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export XDG_CACHE_HOME=$HYPALIGN_CACHE_ROOT/xdg
+export TORCH_HOME=$HYPALIGN_CACHE_ROOT/torch
+export PIP_CACHE_DIR=$HYPALIGN_CACHE_ROOT/pip
+export CONDA_PKGS_DIRS=$SHARED_ROOT/.conda/pkgs
+export MPLCONFIGDIR=$HYPALIGN_CACHE_ROOT/matplotlib
+
+mkdir -p "$HF_HOME" "$HF_HUB_CACHE" "$HF_DATASETS_CACHE" "$TRANSFORMERS_CACHE"
+mkdir -p "$XDG_CACHE_HOME" "$TORCH_HOME" "$PIP_CACHE_DIR" "$CONDA_PKGS_DIRS" "$MPLCONFIGDIR"
+
+# Repo root on Grace group scratch.
 cd $REPO
 
 echo "=== ESM-2 650M Frozen Probe ==="
 echo "Node: $(hostname)  GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "Start: $(date)"
+echo "Shared root: $SHARED_ROOT"
+echo "Conda env: $CONDA_ENV"
+echo "HF_HOME: $HF_HOME"
 
-python -u experiments/hyp_ssf_probe/run_experiment_go.py
+conda run --no-capture-output -p "$CONDA_ENV" python -u experiments/hyp_ssf_probe/run_experiment_go.py
 
 echo "End: $(date)"

@@ -155,6 +155,63 @@ All metrics are computed zero-shot: the same [seq_head, text_head] weights from 
 
 ## 4. Results
 
+### 4.0 Consolidated Grace Results
+
+Updated: 2026-07-21. `AUPR` below is the existing protein-centric threshold-sweep AUPR unless otherwise noted. `macro-AUPR` is the term-centric per-GO average precision added to match Yuxuan's likely reporting convention. A dash means that metric was not produced by that run's result JSON.
+
+**Main internal results**
+
+| Track | Run | Encoder / Features | Loss | Fmax | AUPR | macro-AUPR | wFmax | nDCG@10 | MAP | P2G P@1 |
+|---|---|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Fine-tune | ESM2-650M-FT-ASL | ESM2-650M end-to-end | ASL | **0.3566** | 0.0829 | **0.2954** | **0.3378** | **0.4277** | **0.3636** | **0.5025** |
+| Fine-tune | ESM2-650M-FT-ASL-rerun-20260626 | ESM2-650M end-to-end | ASL | 0.3528 | 0.0839 | 0.2912 | 0.3353 | 0.4229 | 0.3601 | 0.4958 |
+| Fine-tune | ESM2-650M-FT-BCE | ESM2-650M end-to-end | BCE + pos_weight | 0.3206 | **0.0923** | 0.2460 | 0.2997 | 0.3850 | 0.3345 | 0.4493 |
+| Fine-tune | ESM2-650M-FT-BCE-rerun-20260626 | ESM2-650M end-to-end | BCE + pos_weight | 0.3162 | 0.0893 | 0.2479 | 0.2956 | 0.3816 | 0.3307 | 0.4390 |
+| Frozen PLIP | plip_esm2_650m_neuml_bce_posw_cap100 | cached ESM2-650M + NeuML text | BCE + pos_weight cap 100 | 0.2096 | 0.0911 | - | 0.1917 | 0.2262 | 0.2170 | 0.2197 |
+| Frozen PLIP | plip_esm2_650m_neuml_bce_posw_uncapped | cached ESM2-650M + NeuML text | BCE + uncapped pos_weight | 0.1879 | 0.0840 | - | 0.1671 | 0.1833 | 0.1872 | 0.1715 |
+| Frozen InfoNCE | multipos_bs1024 | cached ESM2-650M + NeuML text | multi-positive InfoNCE | 0.1903 | 0.0611 | 0.1351 | 0.1709 | 0.2438 | 0.1974 | 0.3086 |
+| Frozen InfoNCE | fullmultipos_bs1024 | cached ESM2-650M + NeuML text | all-489-GO multi-positive InfoNCE | 0.1722 | 0.0530 | 0.0494 | 0.1505 | 0.2229 | 0.1483 | 0.3534 |
+| Frozen InfoNCE | pair_bs256 | cached ESM2-650M + NeuML text | pair InfoNCE | 0.1751 | 0.0700 | 0.1321 | 0.1586 | 0.1894 | 0.1829 | 0.1922 |
+| Frozen InfoNCE | pair_bs2048 | cached ESM2-650M + NeuML text | pair InfoNCE | 0.1648 | 0.0659 | 0.1413 | 0.1467 | 0.1832 | 0.1780 | 0.2003 |
+
+**v2 geometry reruns with NeuML text encoder**
+
+These are frozen ESM2-650M feature experiments using `run_experiment_go_v2.py --text-model NeuML/pubmedbert-base-embeddings --pooling mean`. They are clean geometry comparisons, not encoder fine-tuning.
+
+| Loss | Geometry | Fmax | AUPR | macro-AUPR |
+|---|---|---:|---:|---:|
+| MulSupCon | Euclidean-v2 | **0.2061** | **0.0856** | **0.0723** |
+| MulSupCon | Hyp-v2 | 0.1662 | 0.0630 | 0.0297 |
+| MulSupCon | Hyp+MERU-v2 | 0.1788 | 0.0742 | 0.0455 |
+| MulSupCon | Hyp+MERU+DAG-v2 | 0.1843 | 0.0777 | 0.0490 |
+| BCE | Euclidean-v2 | 0.1134 | 0.0401 | 0.0217 |
+| BCE | Hyp-v2 | 0.1090 | 0.0457 | 0.0278 |
+| BCE | Hyp+MERU-v2 | 0.1477 | 0.0564 | **0.0307** |
+| BCE | Hyp+MERU+DAG-v2 | **0.1599** | **0.0567** | 0.0285 |
+
+**Superseded v2 run**
+
+This earlier v2 run is kept for traceability but should not be used as the primary geometry comparison. It was run before the latest NeuML/mean-pooling rerun protocol was fixed.
+
+| Geometry | Fmax | AUPR | macro-AUPR |
+|---|---:|---:|---:|
+| Euclidean-v2 | 0.1204 | 0.0442 | 0.0218 |
+| Hyp-v2 | 0.1245 | 0.0506 | 0.0271 |
+| Hyp+MERU-v2 | 0.1307 | 0.0472 | 0.0236 |
+| Hyp+MERU+DAG-v2 | 0.1305 | 0.0459 | 0.0247 |
+
+**External comparison reported by Yuxuan**
+
+These rows are not reproduced by our current code path; they are the numbers shared in chat and are included only as the comparison target.
+
+| Reported run | Loss | Fmax | AUPR | wFmax | nDCG@10 | MAP | P2G P@1 |
+|---|---|---:|---:|---:|---:|---:|---:|
+| plip_test | BCE | 0.5337 | 0.5267 | 0.5165 | 0.6260 | 0.5613 | 0.6968 |
+| infonce_test | InfoNCE | 0.1479 | 0.4752 | 0.1193 | 0.5984 | 0.5350 | 0.6887 |
+| infonce_bigbatch_test | InfoNCE | 0.3169 | 0.0979 | 0.2647 | 0.6002 | 0.5320 | 0.6881 |
+
+**Current interpretation:** the strongest internal baseline is still the end-to-end fine-tuned ESM2-650M ASL run. The v2 geometry experiments improve over the old v1 frozen 8M probe, but they remain below the fine-tuned 650M baseline and far below Yuxuan's PLIP-BCE target. The main unresolved gap is therefore not geometry; it is still the frozen PLIP-BCE protocol mismatch or evaluation/data-order mismatch.
+
 ### 4.1 Prediction Metrics
 
 ```

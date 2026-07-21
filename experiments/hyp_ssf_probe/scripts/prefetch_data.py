@@ -1,186 +1,252 @@
 #!/usr/bin/env python3
 """
-Data preparation — Step 1: CPU-only, run on HPRC login node.
+Prepare HypAlign data and model caches on a Grace login node.
 
-Downloads all model weights, dataset CSVs, and the GO ontology file, then
-parses the CSVs into the cached tensors used by the training scripts.
+This script avoids GPU work. It downloads the ProtST GO-MF CSV splits, decodes
+the ESM-tokenized protein sequences into amino-acid strings, writes
+protst_go_mf_decoded.pt, downloads go-basic.obo, and optionally warms the
+Hugging Face cache for the ESM-2/PubMedBERT models used by the experiments.
 
-After this script finishes, run prepare_features.py on a GPU compute node
-to compute ESM2-650M protein embeddings.
-
-Usage (HPRC login node, no GPU):
+Usage:
     conda activate hypalign
     python experiments/hyp_ssf_probe/scripts/prefetch_data.py
-
-What this produces in experiments/hyp_ssf_probe/cache/:
-    gene_ontology_mf_{train,valid,test}.csv  — raw ProtST dataset splits
-    go-basic.obo                              — GO ontology (for DAG edges)
-    protst_go_mf_decoded.pt                  — parsed sequences + multi-hot targets
-    go_mf_vocab.json                          — GO ID ↔ index mapping (also in git)
-    go_term_embs.pt                           — PubMedBERT GO embeddings (also in git)
-
-Model weights are saved to the HuggingFace cache (~/.cache/huggingface/).
 """
+
+from __future__ import annotations
+
+import argparse
 import ast
 import csv
-import json
-import sys
+import os
+import zipfile
 from pathlib import Path
 
-REPO_ROOT     = Path(__file__).resolve().parents[3]
-CACHE_DIR     = REPO_ROOT / "experiments" / "hyp_ssf_probe" / "cache"
-CACHE_DIR.mkdir(exist_ok=True)
-
-ESM2_HF       = "facebook/esm2_t33_650M_UR50D"
-PUBMEDBERT_HF = "microsoft/BiomedNLP-PubMedBERT-base-uncased-abstract"
-
-# ESM2 token vocabulary (index → amino acid single letter)
-ESM_VOCAB = {
-    4:"L",5:"A",6:"G",7:"V",8:"S",9:"E",10:"R",11:"T",12:"I",13:"D",
-    14:"P",15:"K",16:"Q",17:"N",18:"F",19:"Y",20:"M",21:"H",22:"W",
-    23:"C",24:"X",25:"B",26:"U",27:"Z",28:"O",29:".",30:"-",
-}
-
-def step(msg):
-    print(f"\n{'='*60}\n{msg}\n{'='*60}", flush=True)
-
-
-# ── Step 1: HuggingFace model weights ────────────────────────────────────────
-
-step(f"1/5  Downloading model weights: {ESM2_HF}")
-from transformers import EsmTokenizer, EsmModel, AutoTokenizer, AutoModel
-EsmTokenizer.from_pretrained(ESM2_HF)
-EsmModel.from_pretrained(ESM2_HF)
-print("  done.")
-
-step(f"2/5  Downloading model weights: {PUBMEDBERT_HF}")
-AutoTokenizer.from_pretrained(PUBMEDBERT_HF)
-AutoModel.from_pretrained(PUBMEDBERT_HF)
-print("  done.")
-
-
-# ── Step 2: Dataset CSVs ─────────────────────────────────────────────────────
-
-step("3/5  Downloading ProtST GO-MF dataset CSVs")
 import requests
+import torch
+from huggingface_hub import HfApi, snapshot_download
 
-BASE = "https://huggingface.co/datasets/mila-intel/ProtST-GeneOntology-MF/resolve/main"
-CSV_FILES = {
-    "gene_ontology_mf_train.csv":      f"{BASE}/gene_ontology_mf_train.csv",
-    "gene_ontology_mf_valid.csv":      f"{BASE}/gene_ontology_mf_validation.csv",
-    "gene_ontology_mf_test.csv":       f"{BASE}/gene_ontology_mf_test.csv",
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CACHE_DIR = REPO_ROOT / "experiments" / "hyp_ssf_probe" / "cache"
+SHARED_ROOT = Path(os.environ.get("HYPALIGN_SHARED_ROOT", REPO_ROOT))
+CACHE_ROOT = Path(os.environ.get("HYPALIGN_CACHE_ROOT", SHARED_ROOT / ".cache"))
+HF_CACHE_DIR = Path(os.environ.get("HF_HOME", CACHE_ROOT / "huggingface"))
+CACHE_DIR.mkdir(exist_ok=True)
+HF_CACHE_DIR.mkdir(exist_ok=True)
+
+DEFAULT_ESM2_HF = "facebook/esm2_t33_650M_UR50D"
+DEFAULT_PUBMEDBERT_HF = "NeuML/pubmedbert-base-embeddings"
+HF_DATASET = "mila-intel/ProtST-GeneOntology-MF"
+HF_BASE = f"https://huggingface.co/datasets/{HF_DATASET}/resolve/main"
+GENEONTOLOGY_URL = "https://zenodo.org/records/6622158/files/GeneOntology.zip"
+GENEONTOLOGY_ZIP = CACHE_ROOT / "hypalign_data" / "GeneOntology.zip"
+
+SPLIT_FILES = {
+    "train": "gene_ontology_mf_train.csv",
+    "validation": "gene_ontology_mf_valid.csv",
+    "test": "gene_ontology_mf_test.csv",
 }
-for fname, url in CSV_FILES.items():
-    dst = CACHE_DIR / fname
+
+ESM_VOCAB = {
+    4: "A", 5: "R", 6: "N", 7: "D", 8: "C", 9: "Q", 10: "E", 11: "G",
+    12: "H", 13: "I", 14: "L", 15: "K", 16: "M", 17: "F", 18: "P",
+    19: "S", 20: "T", 21: "W", 22: "Y", 23: "V",
+}
+
+
+def step(msg: str) -> None:
+    print(f"\n{'=' * 60}\n{msg}\n{'=' * 60}", flush=True)
+
+
+def download_file(url: str, dst: Path, timeout: int = 300) -> None:
     if dst.exists():
-        print(f"  {fname}: already cached ({dst.stat().st_size // 1024} KB)")
-        continue
-    print(f"  Downloading {fname} ...", end=" ", flush=True)
-    r = requests.get(url, timeout=300, stream=True)
+        print(f"  {dst.name} already cached, skipping.")
+        return
+    print(f"  Downloading {dst.name} ...", end=" ", flush=True)
+    r = requests.get(url, timeout=timeout, stream=True)
     r.raise_for_status()
     with open(dst, "wb") as f:
-        for chunk in r.iter_content(65536):
-            f.write(chunk)
-    print(f"done ({dst.stat().st_size // 1024} KB)")
+        for chunk in r.iter_content(1 << 20):
+            if chunk:
+                f.write(chunk)
+    print(f"done ({dst.stat().st_size / 1e6:.1f} MB)")
 
 
-# ── Step 3: GO ontology OBO file ─────────────────────────────────────────────
-
-step("4/5  Downloading go-basic.obo")
-obo = CACHE_DIR / "go-basic.obo"
-if obo.exists():
-    print(f"  Already cached ({obo.stat().st_size // 1024} KB)")
-else:
-    print("  Downloading ...", end=" ", flush=True)
-    r = requests.get("http://purl.obolibrary.org/obo/go/go-basic.obo", timeout=300)
-    r.raise_for_status()
-    obo.write_bytes(r.content)
-    print(f"done ({obo.stat().st_size // 1024} KB)")
+def download_csv_splits() -> None:
+    step("Downloading ProtST GO-MF CSV splits")
+    for fname in SPLIT_FILES.values():
+        download_file(f"{HF_BASE}/{fname}", CACHE_DIR / fname)
 
 
-# ── Step 4: Parse CSVs → protst_go_mf_decoded.pt + go_mf_vocab.json ─────────
+def decode_split(split_name: str) -> dict:
+    path = CACHE_DIR / SPLIT_FILES[split_name]
+    seqs, targets = [], []
+    with open(path, newline="") as fh:
+        reader = csv.reader(fh)
+        header = next(reader)
+        col_seq = header.index("prot_seq")
+        col_tgt = header.index("targets")
+        for row in reader:
+            tok = ast.literal_eval(row[col_seq])
+            seqs.append("".join(ESM_VOCAB.get(t, "X") for t in tok))
+            targets.append(torch.tensor(ast.literal_eval(row[col_tgt]),
+                                        dtype=torch.float32))
+    targets_t = torch.stack(targets)
+    n_pos = (targets_t > 0.5).sum(1)
+    print(f"  {split_name:<10} {len(seqs):>6} proteins  "
+          f"avg_pos={n_pos.float().mean():.2f}  "
+          f"min={int(n_pos.min())}  max={int(n_pos.max())}")
+    return {"seqs": seqs, "targets": targets_t}
 
-step("5/5  Parsing CSVs → protst_go_mf_decoded.pt + go_mf_vocab.json")
 
-import torch
+def build_decoded_cache(force: bool = False) -> None:
+    step("Building decoded torch cache")
+    out = CACHE_DIR / "protst_go_mf_decoded.pt"
+    if out.exists() and not force:
+        print(f"  {out.name} already exists, skipping.")
+        return
+    splits = {split: decode_split(split) for split in SPLIT_FILES}
+    torch.save(splits, out)
+    print(f"  Saved {out} ({out.stat().st_size / 1e6:.1f} MB)")
 
-decoded_path = CACHE_DIR / "protst_go_mf_decoded.pt"
-vocab_path   = CACHE_DIR / "go_mf_vocab.json"
 
-if decoded_path.exists() and vocab_path.exists():
-    print(f"  Already cached: {decoded_path.name}, {vocab_path.name}")
-else:
-    # --- Build vocabulary from training split ---
-    # Each row's 'targets' is a list of GO term indices 0..488 already encoded
-    # as a 489-dim multi-hot vector.  We need to recover GO IDs and names from
-    # the CSV header / a separate column.
-    #
-    # The CSV schema (ProtST-GeneOntology-MF):
-    #   columns: '', prot_seq, targets, pdb_files, [optionally] go_id, go_name
-    # 'targets' is a Python list literal like [0.0, 1.0, 0.0, ...]  (489 values)
-    # 'prot_seq' is a list of ESM token IDs (integers), NOT raw amino acids.
-    #
-    # GO ID / name mapping: we parse it from go-basic.obo using the ordering
-    # established by whichever GO IDs appear in the column headers (if present),
-    # or reconstruct it from the data itself.
-    #
-    # For the ProtST dataset the GO IDs are stored in a separate CSV column
-    # 'go_id' on the header row, OR the first row after the header.
-    # We use a deterministic approach: parse the obo file for MF terms,
-    # then align with the 489-dimensional target vector order.
-    # The safest approach is to reuse the go_mf_vocab.json already committed
-    # to the repo (experiments/hyp_ssf_probe/cache/ is gitignored, but the
-    # vocab is tracked). If the repo copy is absent, we reconstruct from obo.
+def download_go_obo() -> None:
+    step("Downloading go-basic.obo")
+    download_file(
+        "http://purl.obolibrary.org/obo/go/go-basic.obo",
+        CACHE_DIR / "go-basic.obo",
+    )
 
-    repo_vocab = REPO_ROOT / "experiments" / "hyp_ssf_probe" / "data" / "go_mf_vocab.json"
-    if repo_vocab.exists():
-        import shutil
-        shutil.copy(repo_vocab, vocab_path)
-        print(f"  Copied go_mf_vocab.json from repo data/")
-    elif not vocab_path.exists():
-        print("  go_mf_vocab.json not found — will be built by training script on first run.")
 
-    # --- Parse each CSV split ---
-    import torch
-    splits = {}
-    split_map = {
-        "train":      "gene_ontology_mf_train.csv",
-        "validation": "gene_ontology_mf_valid.csv",
-        "test":       "gene_ontology_mf_test.csv",
+def parse_go_names_from_obo() -> dict[str, str]:
+    obo_path = CACHE_DIR / "go-basic.obo"
+    if not obo_path.exists():
+        download_go_obo()
+    names = {}
+    current_id, current_name, in_term = None, None, False
+    with open(obo_path) as fh:
+        for line in fh:
+            line = line.strip()
+            if line == "[Term]":
+                current_id, current_name, in_term = None, None, True
+            elif in_term and line.startswith("id:"):
+                current_id = line.split("id:", 1)[1].strip()
+            elif in_term and line.startswith("name:"):
+                current_name = line.split("name:", 1)[1].strip()
+            elif line == "" and in_term:
+                if current_id and current_name:
+                    names[current_id] = current_name
+                current_id, current_name, in_term = None, None, False
+    if current_id and current_name:
+        names[current_id] = current_name
+    return names
+
+
+def prepare_go_mf_vocab(zip_path: Path | None = None) -> None:
+    step("Preparing GO-MF vocabulary from TorchDrug GeneOntology metadata")
+    zip_path = zip_path or GENEONTOLOGY_ZIP
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    if not zip_path.exists():
+        download_file(GENEONTOLOGY_URL, zip_path, timeout=1800)
+
+    with zipfile.ZipFile(zip_path) as zf:
+        annot_name = None
+        for name in zf.namelist():
+            if name.endswith("GeneOntology/nrPDB-GO_annot.tsv"):
+                annot_name = name
+                break
+        if annot_name is None:
+            raise FileNotFoundError("nrPDB-GO_annot.tsv not found in GeneOntology.zip")
+        rows = []
+        with zf.open(annot_name) as fh:
+            for raw in fh:
+                rows.append(raw.decode("utf-8").rstrip("\n").split("\t"))
+                if len(rows) >= 12:
+                    break
+
+    # The ProtST target vectors follow the ordered MF labels in this archive.
+    go_ids = [go_id.strip() for go_id in rows[1]]
+    if len(go_ids) != 489:
+        raise ValueError(f"Expected 489 MF GO terms, found {len(go_ids)}")
+    archive_names = [name.strip() for name in rows[3]]
+    if len(archive_names) != len(go_ids):
+        id_to_name = parse_go_names_from_obo()
+        go_names = [id_to_name.get(go_id, go_id) for go_id in go_ids]
+    else:
+        go_names = archive_names
+    vocab = {
+        "go_ids": go_ids,
+        "go_names": go_names,
+        "id_to_idx": {go_id: i for i, go_id in enumerate(go_ids)},
     }
-    for split, fname in split_map.items():
-        src = CACHE_DIR / fname
-        print(f"  Parsing {fname} ...", end=" ", flush=True)
-        seqs, targets = [], []
-        with open(src, newline="") as fh:
-            reader = csv.reader(fh)
-            header = next(reader)
-            col_seq = header.index("prot_seq")
-            col_tgt = header.index("targets")
-            for row in reader:
-                tok_ids = ast.literal_eval(row[col_seq])
-                seq_str = "".join(ESM_VOCAB.get(t, "X") for t in tok_ids)
-                seqs.append(seq_str)
-                tgt = ast.literal_eval(row[col_tgt])
-                targets.append(torch.tensor(tgt, dtype=torch.float32))
-        tgt_tensor = torch.stack(targets)
-        n_pos = (tgt_tensor > 0.5).sum(1).float()
-        splits[split] = {"seqs": seqs, "targets": tgt_tensor}
-        print(f"done  {len(seqs)} proteins, "
-              f"avg {n_pos.mean():.1f} GO terms/protein "
-              f"(min {int(n_pos.min())}, max {int(n_pos.max())})")
+    out = CACHE_DIR / "go_mf_vocab.json"
+    out.write_text(json_dumps(vocab))
+    print(f"  Saved {out}")
 
-    torch.save(splits, decoded_path)
-    print(f"\n  Saved {decoded_path.name} "
-          f"({decoded_path.stat().st_size // (1024*1024)} MB)")
 
-print("""
-All CPU-side data preparation complete.
-Next: submit a GPU job to compute ESM2-650M protein embeddings.
+def json_dumps(obj) -> str:
+    import json
+    return json.dumps(obj, indent=2) + "\n"
 
-    sbatch experiments/hyp_ssf_probe/scripts/submit_prepare_features.sh
 
-Or run directly on a GPU node:
+def weight_patterns_for_repo(model_id: str) -> list[str]:
+    files = set(HfApi().list_repo_files(model_id))
+    if "model.safetensors" in files:
+        return ["model.safetensors"]
+    if any(f.startswith("model-") and f.endswith(".safetensors") for f in files):
+        return ["model.safetensors.index.json", "model-*.safetensors"]
+    if "pytorch_model.bin" in files:
+        return ["pytorch_model.bin"]
+    if any(f.startswith("pytorch_model-") and f.endswith(".bin") for f in files):
+        return ["pytorch_model.bin.index.json", "pytorch_model-*.bin"]
+    return ["*.safetensors", "*.bin"]
 
-    python experiments/hyp_ssf_probe/scripts/prepare_features.py
-""")
+
+def warm_hf_model_cache(model_id: str, cache_dir: Path) -> None:
+    step(f"Warming Hugging Face cache: {model_id}")
+    weight_patterns = weight_patterns_for_repo(model_id)
+    snapshot_download(
+        repo_id=model_id,
+        allow_patterns=[
+            "*.json", "*.txt", "*.model",
+            "vocab.*", "tokenizer.*", "special_tokens_map.json",
+            *weight_patterns,
+        ],
+        cache_dir=cache_dir,
+        max_workers=1,
+    )
+    print(f"  weights: {', '.join(weight_patterns)}")
+    print("  done.")
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Prepare HypAlign data caches.")
+    parser.add_argument("--esm-model", default=DEFAULT_ESM2_HF)
+    parser.add_argument("--pubmedbert-model", default=DEFAULT_PUBMEDBERT_HF)
+    parser.add_argument("--skip-models", action="store_true")
+    parser.add_argument("--skip-pubmedbert", action="store_true")
+    parser.add_argument("--hf-cache-dir", type=Path, default=HF_CACHE_DIR)
+    parser.add_argument("--prepare-go-vocab", action="store_true")
+    parser.add_argument("--geneontology-zip", type=Path, default=None)
+    parser.add_argument("--force-decode", action="store_true")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    download_csv_splits()
+    build_decoded_cache(force=args.force_decode)
+    download_go_obo()
+    if args.prepare_go_vocab:
+        prepare_go_mf_vocab(args.geneontology_zip)
+    if not args.skip_models:
+        args.hf_cache_dir.mkdir(parents=True, exist_ok=True)
+        warm_hf_model_cache(args.esm_model, args.hf_cache_dir)
+        if not args.skip_pubmedbert:
+            warm_hf_model_cache(args.pubmedbert_model, args.hf_cache_dir)
+    print(f"\nAll requested caches are ready under: {CACHE_DIR}")
+    if not args.skip_models:
+        print(f"Hugging Face cache: {args.hf_cache_dir}")
+
+
+if __name__ == "__main__":
+    main()

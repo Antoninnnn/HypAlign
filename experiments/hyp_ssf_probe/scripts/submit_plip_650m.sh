@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=hypalign-probe-v2-msc
+#SBATCH --job-name=hypalign-plip-650m
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 #SBATCH --gres=gpu:a100:1
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 #SBATCH --partition=gpu
 #SBATCH --output=/scratch/group/aibi/Protein_LLM/HypAlign/experiments/hyp_ssf_probe/logs/%x_%j.out
 #SBATCH --mail-type=END,FAIL
@@ -47,18 +47,61 @@ mkdir -p experiments/hyp_ssf_probe/logs \
          experiments/hyp_ssf_probe/checkpoints \
          experiments/hyp_ssf_probe/results
 
-echo "=== HypAlign Probe v2 (ESM2-650M, MLP, MulSupCon, NeuML mean) ==="
+echo "=== PLIP-style ESM2-650M + NeuML PubMedBERT BCE baseline ==="
 echo "Node: $(hostname)"
-echo "GPU:  $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
+echo "GPU: $(nvidia-smi --query-gpu=name --format=csv,noheader)"
 echo "Start: $(date)"
 echo "Repo: $REPO"
+echo "Shared root: $SHARED_ROOT"
 echo "Conda env: $CONDA_ENV"
 echo "HF_HOME: $HF_HOME"
 
+echo
+echo "=== Data/model preflight ==="
 conda run --no-capture-output -p "$CONDA_ENV" python -u \
-    experiments/hyp_ssf_probe/run_experiment_go_v2.py \
-    --loss mulsupcon \
+    experiments/hyp_ssf_probe/scripts/prefetch_data.py \
+    --esm-model facebook/esm2_t33_650M_UR50D \
+    --pubmedbert-model NeuML/pubmedbert-base-embeddings \
+    --prepare-go-vocab \
+    --skip-models
+
+echo
+echo "=== Variant 1: Yuxuan-style uncapped pos_weight BCE ==="
+conda run --no-capture-output -p "$CONDA_ENV" python -u \
+    experiments/hyp_ssf_probe/run_plip_go.py \
+    --esm-model facebook/esm2_t33_650M_UR50D \
     --text-model NeuML/pubmedbert-base-embeddings \
-    --pooling mean
+    --label plip_esm2_650m_neuml_bce_posw_uncapped \
+    --epochs 200 \
+    --batch-size 256 \
+    --embed-batch-size 16 \
+    --text-batch-size 64 \
+    --max-len 512 \
+    --proj-dim 256 \
+    --hidden-dim 512 \
+    --lr 1e-3 \
+    --weight-decay 1e-5 \
+    --pos-weight-cap 1000000 \
+    --eval-every 5 \
+    --compute-protein-feats
+
+echo
+echo "=== Variant 2: capped pos_weight BCE stability check ==="
+conda run --no-capture-output -p "$CONDA_ENV" python -u \
+    experiments/hyp_ssf_probe/run_plip_go.py \
+    --esm-model facebook/esm2_t33_650M_UR50D \
+    --text-model NeuML/pubmedbert-base-embeddings \
+    --label plip_esm2_650m_neuml_bce_posw_cap100 \
+    --epochs 200 \
+    --batch-size 256 \
+    --embed-batch-size 16 \
+    --text-batch-size 64 \
+    --max-len 512 \
+    --proj-dim 256 \
+    --hidden-dim 512 \
+    --lr 1e-3 \
+    --weight-decay 1e-5 \
+    --pos-weight-cap 100 \
+    --eval-every 5
 
 echo "End: $(date)"

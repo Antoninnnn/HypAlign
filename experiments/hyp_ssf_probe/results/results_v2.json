@@ -1,0 +1,22 @@
+{
+  "Euclidean-v2": {
+    "fmax": 0.1204,
+    "aupr": 0.0442,
+    "macro_aupr": 0.0218
+  },
+  "Hyp-v2": {
+    "fmax": 0.1245,
+    "aupr": 0.0506,
+    "macro_aupr": 0.0271
+  },
+  "Hyp+MERU-v2": {
+    "fmax": 0.1307,
+    "aupr": 0.0472,
+    "macro_aupr": 0.0236
+  },
+  "Hyp+MERU+DAG-v2": {
+    "fmax": 0.1305,
+    "aupr": 0.0459,
+    "macro_aupr": 0.0247
+  }
+}
