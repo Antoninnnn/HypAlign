@@ -89,7 +89,7 @@ class MLPLorentzHead(nn.Module):
     def __init__(self, in_dim, hidden_dim, out_dim):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim, bias=False),
+            nn.Linear(in_dim, hidden_dim, bias=True),   # bias: lets head shift distribution freely
             nn.GELU(),
             nn.Linear(hidden_dim, out_dim, bias=False),
         )
@@ -106,7 +106,7 @@ class MLPEuclideanHead(nn.Module):
     def __init__(self, in_dim, hidden_dim, out_dim):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim, bias=False),
+            nn.Linear(in_dim, hidden_dim, bias=True),   # bias: symmetric with LorentzHead
             nn.GELU(),
             nn.Linear(hidden_dim, out_dim, bias=False),
         )
@@ -123,11 +123,12 @@ class GOProbeV2(nn.Module):
         super().__init__()
         self.geometry = geometry
         if geometry == "lorentz":
-            self.log_curv  = nn.Parameter(torch.tensor(math.log(CURV_INIT))) \
-                             if learn_curv else \
-                             torch.tensor(math.log(CURV_INIT))
-            self.seq_head  = MLPLorentzHead(seq_dim,  hidden_dim, proj_dim)
-            self.text_head = MLPLorentzHead(text_dim, hidden_dim, proj_dim)
+            self.log_curv   = nn.Parameter(torch.tensor(math.log(CURV_INIT))) \
+                              if learn_curv else \
+                              torch.tensor(math.log(CURV_INIT))
+            self.logit_bias = nn.Parameter(torch.zeros(1))  # fixes always-negative BCE logit
+            self.seq_head   = MLPLorentzHead(seq_dim,  hidden_dim, proj_dim)
+            self.text_head  = MLPLorentzHead(text_dim, hidden_dim, proj_dim)
         else:
             self.seq_head  = MLPEuclideanHead(seq_dim,  hidden_dim, proj_dim)
             self.text_head = MLPEuclideanHead(text_dim, hidden_dim, proj_dim)
@@ -148,7 +149,9 @@ class GOProbeV2(nn.Module):
     def similarity(self, seq_emb, go_emb):
         """[B, D] × [N_go, D] → [B, N_go] similarity logits."""
         if self.geometry == "lorentz":
-            return -pairwise_dist(seq_emb, go_emb, self.curv) \
+            # logit_bias shifts logits so positives can be > 0 and negatives < 0.
+            # Without it, -distance * scale ≤ 0 always, breaking BCE calibration.
+            return self.logit_bias - pairwise_dist(seq_emb, go_emb, self.curv) \
                    * self.log_temp.exp()
         else:
             return seq_emb @ go_emb.T * self.log_temp.exp()
@@ -388,7 +391,13 @@ def train_one(label, geometry, lam_meru, lam_dag,
         if epoch % 5 == 0 or epoch == n_epochs:
             fmax, aupr = evaluate(probe, seq_val, go_emb_raw, tgt_val, device)
             elapsed = time.time() - t0
-            kstr = f"  κ={probe.curv.item():.3f}" if geometry == "lorentz" else ""
+            if geometry == "lorentz":
+                kstr = (f"  κ={probe.curv.item():.3f}"
+                        f"  bias={probe.logit_bias.item():.3f}"
+                        f"  seq_α={probe.seq_head.log_alpha.exp().item():.4f}"
+                        f"  txt_α={probe.text_head.log_alpha.exp().item():.4f}")
+            else:
+                kstr = ""
             print(f"  [{label}] ep {epoch:3d}/{n_epochs}  "
                   f"loss={epoch_loss/len(loader):.4f}  "
                   f"val_Fmax={fmax:.4f}  val_AUPR={aupr:.4f}{kstr}  "
@@ -427,9 +436,12 @@ def main():
     parser.add_argument("--proj-dim",   type=int, default=PROJ_DIM)
     parser.add_argument("--cond",       type=str, default=None,
                         help="Run only conditions whose label contains this substring")
+    parser.add_argument("--run-tag",    type=str, default="",
+                        help="Suffix appended to result/checkpoint filenames, "
+                             "e.g. '_bias' → results_v2_bce_bias.json")
     args = parser.parse_args()
 
-    pfx = "msc" if args.loss == "mulsupcon" else "bce"
+    pfx = ("msc" if args.loss == "mulsupcon" else "bce") + args.run_tag
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}  loss={args.loss}  epochs={args.epochs}  "
