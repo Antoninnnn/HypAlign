@@ -1,5 +1,11 @@
 # HPRC Cluster Jobs
 
+> Historical planning note. The current Grace result registry is
+> `experiments/hyp_ssf_probe/report.md` section 4.0, with machine-readable
+> outputs under `experiments/hyp_ssf_probe/results/`. Some paths and expected
+> baselines below predate the clean cache-safe reruns and are retained only for
+> provenance.
+
 Jobs that require more compute than the local RTX 4500 Ada (25.2 GB) can handle
 efficiently. Submit to TAMU HPRC (Grace or FASTER cluster, A100 nodes).
 
