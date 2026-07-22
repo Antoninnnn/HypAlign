@@ -51,7 +51,7 @@ echo "Node: $(hostname)"
 echo "GPU:  $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader)"
 echo "Start: $(date)"
 
-conda run --no-capture-output -p "$CONDA_ENV" python -u \
+"$CONDA_ENV/bin/python" -u \
     experiments/hyp_ssf_probe/evaluate_dual_encoder_cafa.py \
     --device cuda \
     --batch-size 1024
