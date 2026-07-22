@@ -1,0 +1,26 @@
+{
+  "Euclidean-v2-bce_cleanmf": {
+    "fmax": 0.1399,
+    "aupr": 0.0353,
+    "macro_aupr": 0.046,
+    "best_val_fmax": 0.1242
+  },
+  "Hyp-v2-bce_cleanmf": {
+    "fmax": 0.1307,
+    "aupr": 0.0434,
+    "macro_aupr": 0.0337,
+    "best_val_fmax": 0.083
+  },
+  "Hyp+MERU-v2-bce_cleanmf": {
+    "fmax": 0.1545,
+    "aupr": 0.049,
+    "macro_aupr": 0.0378,
+    "best_val_fmax": 0.1243
+  },
+  "Hyp+MERU+DAG-v2-bce_cleanmf": {
+    "fmax": 0.1215,
+    "aupr": 0.0438,
+    "macro_aupr": 0.0241,
+    "best_val_fmax": 0.0881
+  }
+}

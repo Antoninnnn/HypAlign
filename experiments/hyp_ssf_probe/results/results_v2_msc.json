@@ -1,22 +1,22 @@
 {
   "Euclidean-v2-msc": {
-    "fmax": 0.2061,
-    "aupr": 0.0856,
-    "macro_aupr": 0.0723
+    "fmax": 0.2121,
+    "aupr": 0.0855,
+    "macro_aupr": 0.0717
   },
   "Hyp-v2-msc": {
-    "fmax": 0.1662,
-    "aupr": 0.063,
-    "macro_aupr": 0.0297
+    "fmax": 0.1742,
+    "aupr": 0.0657,
+    "macro_aupr": 0.0305
   },
   "Hyp+MERU-v2-msc": {
-    "fmax": 0.1788,
-    "aupr": 0.0742,
-    "macro_aupr": 0.0455
+    "fmax": 0.1832,
+    "aupr": 0.0755,
+    "macro_aupr": 0.0449
   },
   "Hyp+MERU+DAG-v2-msc": {
-    "fmax": 0.1843,
-    "aupr": 0.0777,
-    "macro_aupr": 0.049
+    "fmax": 0.1772,
+    "aupr": 0.076,
+    "macro_aupr": 0.0495
   }
 }

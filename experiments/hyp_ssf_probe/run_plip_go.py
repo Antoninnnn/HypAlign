@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PLIP-style supervised baseline for ProtST GO-MF.
+PLIP-style supervised baseline for ProtST GO.
 
 This matches the stronger baseline discussed with Yuxuan:
   frozen ESM-2 protein embeddings + frozen PubMedBERT sentence embeddings
@@ -8,8 +8,7 @@ This matches the stronger baseline discussed with Yuxuan:
   -> BCEWithLogitsLoss(pos_weight=...).
 
 The script intentionally trains only the projection heads. It assumes the label
-text order matches the target-vector order. If go_mf_vocab.json is not present,
-pass --term-text-file with exactly 489 lines in that order.
+text order matches the target-vector order.
 """
 
 from __future__ import annotations
@@ -38,9 +37,6 @@ RESULTS_DIR.mkdir(exist_ok=True)
 
 DEFAULT_ESM_MODEL = "facebook/esm2_t33_650M_UR50D"
 DEFAULT_TEXT_MODEL = "NeuML/pubmedbert-base-embeddings"
-N_GO = 489
-
-
 class ProjectionHead(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
@@ -80,29 +76,33 @@ def slugify(label: str) -> str:
     return "".join(out).strip("_")
 
 
-def load_splits():
-    path = CACHE_DIR / "protst_go_mf_decoded.pt"
+def load_splits(splits_cache: str):
+    path = Path(splits_cache)
+    if not path.is_absolute():
+        path = CACHE_DIR / splits_cache
     if not path.exists():
         raise FileNotFoundError(
-            f"{path} not found. Run scripts/prefetch_data.py --skip-models first."
+            f"{path} not found. Build it first with scripts/build_go_namespace_cache.py."
         )
-    return torch.load(path, map_location="cpu", weights_only=False)
+    return torch.load(path, map_location="cpu", weights_only=False), path
 
 
-def load_term_texts(term_text_file: str | None):
+def load_term_texts(term_text_file: str | None, vocab_file: str, expected_terms: int):
     if term_text_file:
         texts = [line.strip() for line in Path(term_text_file).read_text().splitlines()
                  if line.strip()]
     else:
-        vocab_path = CACHE_DIR / "go_mf_vocab.json"
+        vocab_path = Path(vocab_file)
+        if not vocab_path.is_absolute():
+            vocab_path = CACHE_DIR / vocab_file
         if not vocab_path.exists():
             raise FileNotFoundError(
-                f"{vocab_path} not found. Pass --term-text-file with 489 ordered GO prompts."
+                f"{vocab_path} not found. Pass --term-text-file or --vocab-file."
             )
         vocab = json.loads(vocab_path.read_text())
         texts = [f"FUNCTION: {name}." for name in vocab["go_names"]]
-    if len(texts) != N_GO:
-        raise ValueError(f"Expected {N_GO} GO term texts, found {len(texts)}")
+    if len(texts) != expected_terms:
+        raise ValueError(f"Expected {expected_terms} GO term texts, found {len(texts)}")
     return texts
 
 
@@ -113,11 +113,19 @@ def mean_pool_text(model, enc):
     return (out * mask).sum(1) / mask.sum(1).clamp(min=1)
 
 
-def compute_term_embeddings(texts, text_model: str, device, batch_size: int):
-    cache_path = CACHE_DIR / f"go_terms_{model_tag(text_model)}.pt"
+def compute_term_embeddings(texts, text_model: str, device, batch_size: int,
+                            cache_name: str):
+    cache_path = Path(cache_name)
+    if not cache_path.is_absolute():
+        cache_path = CACHE_DIR / cache_name
     if cache_path.exists():
         print(f"  [text] using cache: {cache_path}")
-        return torch.load(cache_path, map_location="cpu", weights_only=True)
+        embs = torch.load(cache_path, map_location="cpu", weights_only=True)
+        if embs.shape[0] != len(texts):
+            raise ValueError(
+                f"{cache_path} has {embs.shape[0]} rows but {len(texts)} texts were provided"
+            )
+        return embs
 
     print(f"  [text] encoding {len(texts)} terms with {text_model}")
     from transformers import AutoModel, AutoTokenizer
@@ -138,12 +146,22 @@ def compute_term_embeddings(texts, text_model: str, device, batch_size: int):
 
 @torch.no_grad()
 def compute_protein_embeddings(splits, esm_model: str, device, batch_size: int,
-                               max_len: int):
-    tag = model_tag(esm_model)
-    cache_path = CACHE_DIR / f"esm2_{tag}_go_feats.pt"
+                               max_len: int, cache_name: str):
+    cache_path = Path(cache_name)
+    if not cache_path.is_absolute():
+        cache_path = CACHE_DIR / cache_name
     if cache_path.exists():
         print(f"  [esm] using cache: {cache_path}")
-        return torch.load(cache_path, map_location="cpu", weights_only=True)
+        feats = torch.load(cache_path, map_location="cpu", weights_only=True)
+        for split, data in splits.items():
+            if split not in feats:
+                raise ValueError(f"{cache_path} is missing split {split}")
+            if feats[split].shape[0] != len(data["seqs"]):
+                raise ValueError(
+                    f"{cache_path}:{split} has {feats[split].shape[0]} rows "
+                    f"but split has {len(data['seqs'])} sequences"
+                )
+        return feats
 
     print(f"  [esm] computing frozen embeddings with {esm_model}")
     from transformers import EsmModel, EsmTokenizer
@@ -279,6 +297,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--esm-model", default=DEFAULT_ESM_MODEL)
     parser.add_argument("--text-model", default=DEFAULT_TEXT_MODEL)
+    parser.add_argument("--splits-cache", default="protst_go_mf_decoded.pt")
+    parser.add_argument("--vocab-file", default="go_mf_vocab.json")
+    parser.add_argument("--feature-cache", default=None)
+    parser.add_argument("--term-embedding-cache", default=None)
     parser.add_argument("--term-text-file", default=None)
     parser.add_argument("--label", default="plip_esm2_650m_neuml_bce")
     parser.add_argument("--epochs", type=int, default=200)
@@ -303,19 +325,34 @@ def main():
     print(f"Device: {device}")
     print(f"Label:  {args.label}")
 
-    splits = load_splits()
-    texts = load_term_texts(args.term_text_file)
+    splits, splits_path = load_splits(args.splits_cache)
+    num_terms = int(splits["train"]["targets"].shape[1])
+    dataset_tag = slugify(splits_path.stem.replace("_decoded", ""))
+    text_cache = args.term_embedding_cache
+    if text_cache is None:
+        text_cache = f"go_terms_{dataset_tag}_{model_tag(args.text_model)}.pt"
+    feature_cache = args.feature_cache
+    if feature_cache is None:
+        feature_cache = f"esm2_{model_tag(args.esm_model)}_{dataset_tag}_feats.pt"
+    print(f"Splits: {splits_path} ({num_terms} GO terms)")
+    print(f"Feature cache: {feature_cache}")
+    print(f"Text cache:    {text_cache}")
+
+    texts = load_term_texts(args.term_text_file, args.vocab_file, num_terms)
     term_embeddings = compute_term_embeddings(
-        texts, args.text_model, device, args.text_batch_size
+        texts, args.text_model, device, args.text_batch_size, text_cache
     )
 
-    feats_path = CACHE_DIR / f"esm2_{model_tag(args.esm_model)}_go_feats.pt"
+    feats_path = Path(feature_cache)
+    if not feats_path.is_absolute():
+        feats_path = CACHE_DIR / feature_cache
     if not feats_path.exists() and not args.compute_protein_feats:
         raise FileNotFoundError(
             f"{feats_path} not found. Re-run with --compute-protein-feats on a GPU node."
         )
     feats = compute_protein_embeddings(
-        splits, args.esm_model, device, args.embed_batch_size, args.max_len
+        splits, args.esm_model, device, args.embed_batch_size, args.max_len,
+        feature_cache
     )
 
     xtr = feats["train"].float()

@@ -1,0 +1,24 @@
+{
+  "bp": {
+    "our_existing_json_Fmax": 0.463229,
+    "our_existing_json_AUPR": 0.194286,
+    "paper_style_Fmax": 0.464267,
+    "paper_style_micro_AUPR": 0.323422,
+    "paper_style_best_threshold": 0.371,
+    "protst_paper_Fmax": 0.482,
+    "protst_paper_AUPR": 0.342,
+    "delta_Fmax_vs_protst": -0.017733,
+    "delta_AUPR_vs_protst": -0.018578
+  },
+  "cc": {
+    "our_existing_json_Fmax": 0.535884,
+    "our_existing_json_AUPR": 0.270937,
+    "paper_style_Fmax": 0.538986,
+    "paper_style_micro_AUPR": 0.421361,
+    "paper_style_best_threshold": 0.11,
+    "protst_paper_Fmax": 0.487,
+    "protst_paper_AUPR": 0.364,
+    "delta_Fmax_vs_protst": 0.051986,
+    "delta_AUPR_vs_protst": 0.057361
+  }
+}

@@ -1,22 +1,22 @@
 {
   "Euclidean-v2-bce": {
-    "fmax": 0.1134,
-    "aupr": 0.0401,
-    "macro_aupr": 0.0217
+    "fmax": 0.1157,
+    "aupr": 0.0442,
+    "macro_aupr": 0.0267
   },
   "Hyp-v2-bce": {
-    "fmax": 0.109,
-    "aupr": 0.0457,
-    "macro_aupr": 0.0278
+    "fmax": 0.1522,
+    "aupr": 0.0523,
+    "macro_aupr": 0.0275
   },
   "Hyp+MERU-v2-bce": {
-    "fmax": 0.1477,
-    "aupr": 0.0564,
-    "macro_aupr": 0.0307
+    "fmax": 0.1435,
+    "aupr": 0.0581,
+    "macro_aupr": 0.03
   },
   "Hyp+MERU+DAG-v2-bce": {
-    "fmax": 0.1599,
-    "aupr": 0.0567,
-    "macro_aupr": 0.0285
+    "fmax": 0.1461,
+    "aupr": 0.0558,
+    "macro_aupr": 0.0251
   }
 }

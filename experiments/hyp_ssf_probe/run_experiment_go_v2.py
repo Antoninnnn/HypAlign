@@ -71,6 +71,13 @@ EPS         = 1e-8
 def model_tag(model_name: str) -> str:
     return model_name.split("/")[-1].replace("/", "_")
 
+
+def cache_path(name: str | None, default_name: str) -> Path:
+    path = Path(name or default_name)
+    if not path.is_absolute():
+        path = CACHE_DIR / path
+    return path
+
 # ── Lorentz math ──────────────────────────────────────────────────────────────
 
 def _time(x, curv):
@@ -226,12 +233,14 @@ def dag_loss(probe, go_emb, dag_edges):
 
 # ── Data ──────────────────────────────────────────────────────────────────────
 
-def compute_esm2_features(splits, device):
+def compute_esm2_features(splits, device, cache_name: str | None = None):
     model_tag  = ESM2_HF.split("/")[-1]
-    cache_path = CACHE_DIR / f"esm2_{model_tag}_go_feats.pt"
-    if cache_path.exists():
-        print(f"  [esm2] Using cache: {cache_path}")
-        return torch.load(cache_path, map_location="cpu", weights_only=True)
+    path = cache_path(cache_name, f"esm2_{model_tag}_go_feats.pt")
+    if path.exists():
+        print(f"  [esm2] Using cache: {path}")
+        feats = torch.load(path, map_location="cpu", weights_only=True)
+        validate_feature_cache(feats, splits, path)
+        return feats
 
     print(f"  [esm2] Computing {ESM2_HF} features ...")
     from transformers import EsmTokenizer, EsmModel
@@ -254,16 +263,34 @@ def compute_esm2_features(splits, device):
         feats[split] = torch.cat(embs)
         print(f"    {split}: {feats[split].shape}")
     del model; torch.cuda.empty_cache()
-    torch.save(feats, cache_path)
+    torch.save(feats, path)
     return feats
 
 
-def compute_go_embeddings(vocab, device, text_model_hf=PUBMEDBERT_HF, pooling="cls"):
+def validate_feature_cache(feats, splits, path: Path) -> None:
+    for split, data in splits.items():
+        if split not in feats:
+            raise ValueError(f"{path} is missing split {split}")
+        expected = len(data["seqs"])
+        actual = int(feats[split].shape[0])
+        if actual != expected:
+            raise ValueError(
+                f"{path}:{split} has {actual} rows but dataset has {expected} sequences"
+            )
+
+
+def compute_go_embeddings(vocab, device, text_model_hf=PUBMEDBERT_HF,
+                          pooling="cls", cache_name: str | None = None):
     model_tag  = text_model_hf.replace("/", "_").replace("-", "_")
-    cache_path = CACHE_DIR / f"go_term_embs_{model_tag}_{pooling}.pt"
-    if cache_path.exists():
-        t = torch.load(cache_path, map_location="cpu", weights_only=True)
-        print(f"  [text] Using cache: {cache_path.name}  {tuple(t.shape)}")
+    path = cache_path(cache_name, f"go_term_embs_{model_tag}_{pooling}.pt")
+    expected_terms = len(get_go_names(vocab))
+    if path.exists():
+        t = torch.load(path, map_location="cpu", weights_only=True)
+        if int(t.shape[0]) != expected_terms:
+            raise ValueError(
+                f"{path} has {t.shape[0]} GO rows but vocab has {expected_terms} terms"
+            )
+        print(f"  [text] Using cache: {path.name}  {tuple(t.shape)}")
         return t
 
     print(f"  [text] Computing GO embeddings via {text_model_hf}  pooling={pooling} ...")
@@ -285,8 +312,8 @@ def compute_go_embeddings(vocab, device, text_model_hf=PUBMEDBERT_HF, pooling="c
             embs.append(vec.cpu())
     go_embs = torch.cat(embs)
     del model; torch.cuda.empty_cache()
-    torch.save(go_embs, cache_path)
-    print(f"  Saved {cache_path.name}  {tuple(go_embs.shape)}")
+    torch.save(go_embs, path)
+    print(f"  Saved {path.name}  {tuple(go_embs.shape)}")
     return go_embs
 
 
@@ -301,7 +328,7 @@ def get_go_names(vocab):
     if "go_names" in vocab:
         return vocab["go_names"]
     if "idx_to_name" in vocab:
-        return [vocab["idx_to_name"][str(i)] for i in range(GO_TERMS)]
+        return [vocab["idx_to_name"][str(i)] for i in range(len(vocab["idx_to_name"]))]
     raise KeyError("GO vocab must contain either 'go_names' or 'idx_to_name'.")
 
 
@@ -499,6 +526,14 @@ def main():
                              "Use NeuML/pubmedbert-base-embeddings with --pooling mean.")
     parser.add_argument("--pooling",    type=str, default="cls", choices=["cls", "mean"],
                         help="Pooling for text encoder: cls (default) or mean")
+    parser.add_argument("--splits-cache", type=str, default="protst_go_mf_decoded.pt",
+                        help="Torch cache with train/validation/test seqs and targets")
+    parser.add_argument("--vocab-file", type=str, default="go_mf_vocab.json",
+                        help="GO vocab JSON whose order matches target columns")
+    parser.add_argument("--feature-cache", type=str, default=None,
+                        help="ESM2 feature cache. If missing, it is computed and saved.")
+    parser.add_argument("--term-embedding-cache", type=str, default=None,
+                        help="GO text embedding cache. If missing, it is computed and saved.")
     parser.add_argument("--epochs",     type=int, default=EPOCHS)
     parser.add_argument("--proj-dim",   type=int, default=PROJ_DIM)
     parser.add_argument("--cond",       type=str, default=None,
@@ -519,18 +554,29 @@ def main():
 
     # ── Load data ────────────────────────────────────────────────────────────
     print("[1/4] Loading dataset ...")
-    splits = torch.load(CACHE_DIR / "protst_go_mf_decoded.pt",
-                        map_location="cpu", weights_only=False)
-    vocab  = json.load(open(CACHE_DIR / "go_mf_vocab.json"))
+    splits_path = cache_path(args.splits_cache, "protst_go_mf_decoded.pt")
+    vocab_path = cache_path(args.vocab_file, "go_mf_vocab.json")
+    splits = torch.load(splits_path, map_location="cpu", weights_only=False)
+    vocab  = json.load(open(vocab_path))
+    num_terms = int(splits["train"]["targets"].shape[1])
+    vocab_terms = len(get_go_names(vocab))
+    if vocab_terms != num_terms:
+        raise ValueError(
+            f"Vocab has {vocab_terms} terms but train targets have {num_terms} columns"
+        )
     print(f"  train={len(splits['train']['seqs'])}  "
           f"val={len(splits['validation']['seqs'])}  "
-          f"test={len(splits['test']['seqs'])}", flush=True)
+          f"test={len(splits['test']['seqs'])}  terms={num_terms}\n"
+          f"  splits={splits_path}\n"
+          f"  vocab={vocab_path}", flush=True)
 
     print("\n[2/4] Computing ESM2-650M features ...")
-    esm_feats = compute_esm2_features(splits, device)
+    esm_feats = compute_esm2_features(splits, device, args.feature_cache)
 
     print("\n[3/4] Computing GO term embeddings ...")
-    go_emb_raw = compute_go_embeddings(vocab, device, args.text_model, args.pooling)
+    go_emb_raw = compute_go_embeddings(
+        vocab, device, args.text_model, args.pooling, args.term_embedding_cache
+    )
     print(f"  GO embeddings: {go_emb_raw.shape}")
 
     print("\n[4/4] Loading GO DAG edges ...")
@@ -563,7 +609,10 @@ def main():
                     "loss_type": args.loss,
                     "proj_dim": args.proj_dim,
                     "proj_hidden": PROJ_HIDDEN,
-                    "esm_model": ESM2_HF}, ckpt_path)
+                    "esm_model": ESM2_HF,
+                    "args": vars(args),
+                    "splits_cache": str(splits_path),
+                    "vocab_file": str(vocab_path)}, ckpt_path)
 
         probe = GOProbeV2(ESM_DIM, BERT_DIM, PROJ_HIDDEN, args.proj_dim, geometry)
         probe.load_state_dict(best_state)
@@ -576,6 +625,7 @@ def main():
             "fmax": round(fmax, 4),
             "aupr": round(aupr, 4),
             "macro_aupr": round(macro_aupr, 4),
+            "best_val_fmax": round(best_val_fmax, 4),
         }
 
     # ── Summary ───────────────────────────────────────────────────────────────
