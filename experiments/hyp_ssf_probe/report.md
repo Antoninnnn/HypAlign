@@ -157,7 +157,7 @@ All metrics are computed zero-shot: the same [seq_head, text_head] weights from 
 
 ### 4.0 Consolidated Grace Results
 
-Updated: 2026-07-22. This section is the result registry for Grace runs. `AUPR` below is the existing protein-centric threshold-sweep AUPR unless otherwise noted. `macro-AUPR` is term-centric per-GO average precision. Paper-style micro-AUPR is not yet recomputed for all rows.
+Updated: 2026-07-22. This section is the result registry for Grace runs. `AUPR` in older JSON files is the legacy protein-centric threshold-sweep AUPR unless otherwise noted. For paper-style comparison, use the clean CAFA/ProtST-style evaluator in `results/dual_encoder_cafa_metrics.json`, which reports CAFA-style Fmax, micro-AUPR, macro-AUPR, weighted Fmax, and Smin.
 
 **Current clean frozen Protein-GO dual-encoder baselines**
 
@@ -169,15 +169,25 @@ These are the primary ProtST-style comparison rows. They use TorchDrug `GeneOnto
 | GO-BP | `plip_esm2_650m_neuml_go_bp_bce_posw_cap100` | 1943 | 29902 / 3323 / 3416 | BCE + pos_weight cap 100 | 0.4632 | 0.1943 | 0.4328 | 0.7015 | 0.4656 | 0.7892 |
 | GO-CC | `plip_esm2_650m_neuml_go_cc_bce_posw_cap100` | 320 | 29902 / 3323 / 3416 | BCE + pos_weight cap 100 | 0.5359 | 0.2709 | 0.5019 | 0.6562 | 0.5695 | 0.7485 |
 
+**Clean dual-encoder CAFA/ProtST-style evaluation**
+
+Computed with `evaluate_dual_encoder_cafa.py` from the same clean checkpoints above. `Legacy Fmax` is kept for traceability; `CAFA Fmax`, `micro-AUPR`, and `macro-AUPR` are the metrics to use when comparing with ProtST-style tables. The low legacy AUPR values above are not directly comparable to Yuxuan's reported AUPR.
+
+| Dataset | Terms | Test proteins | Legacy Fmax | CAFA Fmax | wFmax | micro-AUPR | macro-AUPR | Smin | Coverage |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| GO-MF | 489 | 3416 | 0.6226 | **0.6343** | **0.6172** | **0.6320** | **0.6064** | 20.7825 | 0.9476 |
+| GO-BP | 1943 | 3416 | 0.4632 | 0.4643 | 0.4353 | 0.3234 | 0.2849 | 253.7932 | 0.9977 |
+| GO-CC | 320 | 3416 | 0.5359 | 0.5390 | 0.5131 | 0.4214 | 0.3628 | 40.4545 | 0.9936 |
+
 **ProtST paper-style Fmax comparison**
 
-These ProtST values are the relevant paper baseline for the current namespace-specific PDB-chain benchmark. AUPR is omitted here because our current JSON AUPR is not the same paper-style micro-AUPR.
+These ProtST values are the relevant paper baseline for the current namespace-specific PDB-chain benchmark. The comparison below uses our CAFA-style Fmax from `dual_encoder_cafa_metrics.json`.
 
-| Dataset | Our clean Fmax | ProtST-ESM2 Fmax | Gap |
+| Dataset | Our CAFA Fmax | ProtST-ESM2 Fmax | Gap |
 |---|---:|---:|---:|
-| GO-MF | 0.6226 | 0.6680 | -0.0454 |
-| GO-BP | 0.4632 | 0.4820 | -0.0188 |
-| GO-CC | 0.5359 | 0.4870 | +0.0489 |
+| GO-MF | 0.6343 | 0.6680 | -0.0337 |
+| GO-BP | 0.4643 | 0.4820 | -0.0177 |
+| GO-CC | 0.5390 | 0.4870 | +0.0520 |
 
 **Current clean GO-MF v2 geometry reruns**
 
