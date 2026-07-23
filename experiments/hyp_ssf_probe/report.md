@@ -157,7 +157,7 @@ All metrics are computed zero-shot: the same [seq_head, text_head] weights from 
 
 ### 4.0 Consolidated Grace Results
 
-Updated: 2026-07-22. This section is the result registry for Grace runs. `AUPR` in older JSON files is the legacy protein-centric threshold-sweep AUPR unless otherwise noted. For paper-style comparison, use the clean CAFA/ProtST-style evaluator in `results/dual_encoder_cafa_metrics.json`, which reports CAFA-style Fmax, micro-AUPR, macro-AUPR, weighted Fmax, and Smin.
+Updated: 2026-07-23. This section is the result registry for Grace runs. `AUPR` in older JSON files is the legacy protein-centric threshold-sweep AUPR unless otherwise noted. For paper-style GO subtask comparison, use the clean CAFA/ProtST-style evaluator in `results/dual_encoder_cafa_metrics.json`, which reports GO-MF, GO-BP, and GO-CC separately with CAFA-style Fmax, micro-AUPR, macro-AUPR, weighted Fmax, and Smin.
 
 **Current clean frozen Protein-GO dual-encoder baselines**
 
@@ -169,15 +169,25 @@ These are the primary ProtST-style comparison rows. They use TorchDrug `GeneOnto
 | GO-BP | `plip_esm2_650m_neuml_go_bp_bce_posw_cap100` | 1943 | 29902 / 3323 / 3416 | BCE + pos_weight cap 100 | 0.4632 | 0.1943 | 0.4328 | 0.7015 | 0.4656 | 0.7892 |
 | GO-CC | `plip_esm2_650m_neuml_go_cc_bce_posw_cap100` | 320 | 29902 / 3323 / 3416 | BCE + pos_weight cap 100 | 0.5359 | 0.2709 | 0.5019 | 0.6562 | 0.5695 | 0.7485 |
 
-**Clean dual-encoder CAFA/ProtST-style evaluation**
+**GO-MF / GO-BP / GO-CC subtask performance (CAFA/ProtST-style)**
 
-Computed with `evaluate_dual_encoder_cafa.py` from the same clean checkpoints above. `Legacy Fmax` is kept for traceability; `CAFA Fmax`, `micro-AUPR`, and `macro-AUPR` are the metrics to use when comparing with ProtST-style tables. The low legacy AUPR values above are not directly comparable to Yuxuan's reported AUPR.
+Computed by Grace job `19181226` with `evaluate_dual_encoder_cafa.py` from the same clean checkpoints above. Output files: `logs/hypalign-eval-cafa_19181226.out` and `results/dual_encoder_cafa_metrics.json`. The three rows below are the GO subtasks. `CAFA Fmax` is the main threshold metric. `micro-AUPR` is the paper-style global protein-GO pair AUPR; `macro-AUPR` is term-centric per-GO AUPR. The low legacy AUPR values in older JSON files are not directly comparable to Yuxuan's reported AUPR.
 
 | Dataset | Terms | Test proteins | Legacy Fmax | CAFA Fmax | wFmax | micro-AUPR | macro-AUPR | Smin | Coverage |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | GO-MF | 489 | 3416 | 0.6226 | **0.6343** | **0.6172** | **0.6320** | **0.6064** | 20.7825 | 0.9476 |
 | GO-BP | 1943 | 3416 | 0.4632 | 0.4643 | 0.4353 | 0.3234 | 0.2849 | 253.7932 | 0.9977 |
 | GO-CC | 320 | 3416 | 0.5359 | 0.5390 | 0.5131 | 0.4214 | 0.3628 | 40.4545 | 0.9936 |
+
+**Compact ProtST-style subtask table**
+
+Use this table when comparing directly against ProtST-style GO annotation subtasks. It reports one Fmax and one AUPR per GO namespace.
+
+| GO subtask | Model | Fmax | AUPR |
+|---|---|---:|---:|
+| GO-MF | Frozen ESM2-650M + NeuML dual encoder, BCE + capped `pos_weight` | 0.6343 | 0.6320 |
+| GO-BP | Frozen ESM2-650M + NeuML dual encoder, BCE + capped `pos_weight` | 0.4643 | 0.3234 |
+| GO-CC | Frozen ESM2-650M + NeuML dual encoder, BCE + capped `pos_weight` | 0.5390 | 0.4214 |
 
 **ProtST paper-style Fmax comparison**
 
