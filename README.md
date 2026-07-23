@@ -45,6 +45,25 @@ baseline above.
 
 ## Data
 
+### Relationship Between `data/` and `cache/`
+
+`experiments/hyp_ssf_probe/data/` contains small tracked prototype artifacts
+from the early GO-MF-only experiments. In particular,
+`data/go_term_embs.pt` is a legacy `[489, 768]` GO-MF text embedding tensor kept
+in git for historical reproducibility.
+
+`experiments/hyp_ssf_probe/cache/` contains generated runtime artifacts on Grace.
+The clean analysis-ready runs use the namespace-specific cache files there, not
+the tracked prototype `data/go_term_embs.pt`.
+
+Use these current text embedding caches for analysis:
+
+| Namespace | Current text embedding cache |
+|---|---|
+| GO-MF | `cache/go_terms_protst_go_mf_NeuML_pubmedbert-base-embeddings.pt` |
+| GO-BP | `cache/go_terms_protst_go_bp_NeuML_pubmedbert-base-embeddings.pt` |
+| GO-CC | `cache/go_terms_protst_go_cc_NeuML_pubmedbert-base-embeddings.pt` |
+
 For analysis-ready GO-MF/BP/CC results, use the clean namespace caches under
 `experiments/hyp_ssf_probe/cache/`:
 
@@ -63,13 +82,15 @@ kept for reproducibility context. For result interpretation, prefer
 | File | Size | Description |
 |------|------|-------------|
 | `experiments/hyp_ssf_probe/data/go_mf_vocab.json` | 64 KB | GO term ID ↔ index mapping (489 MF terms with 50–5000 annotations) |
-| `experiments/hyp_ssf_probe/data/go_term_embs.pt` | 1.5 MB | PubMedBERT CLS embeddings for 489 GO term descriptions, shape `[489, 768]` |
+| `experiments/hyp_ssf_probe/data/go_term_embs.pt` | 1.5 MB | Legacy tracked GO-MF text embeddings for early prototype runs; not the current analysis-ready text cache |
 | `experiments/hyp_ssf_probe/results/results_v2_bce.json` | tiny | Test Fmax/AUPR for v2 BCE conditions |
 | `experiments/hyp_ssf_probe/results/results_v2_msc.json` | tiny | Test Fmax/AUPR for v2 MulSupCon conditions |
 
 ### Files generated during setup (not in git)
 
-All generated files land in `experiments/hyp_ssf_probe/cache/`.
+Generated files land in `experiments/hyp_ssf_probe/cache/`. The rows below are
+legacy GO-MF prototype examples; the current clean namespace-specific files are
+listed above.
 
 | File | Size | How generated |
 |------|------|---------------|
