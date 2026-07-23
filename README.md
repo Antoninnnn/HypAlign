@@ -3,22 +3,60 @@
 Joint protein sequence–GO-MF function embedding in Euclidean vs hyperbolic
 (Lorentz) space, evaluated with CAFA-standard Fmax/AUPR.
 
-## Results (v2 — frozen ESM2-650M, MLP projector)
+## Current Analysis-Ready Baseline
 
-| Model | Loss | Fmax | AUPR |
-|-------|------|------|------|
-| Euclidean | BCE | 0.112 | 0.040 |
-| **Lorentz** | **BCE** | **0.143** | **0.059** |
-| Lorentz + MERU | BCE | 0.143 | 0.051 |
-| Lorentz + MERU + DAG | BCE | 0.144 | 0.052 |
-| **Euclidean** | **MulSupCon** | **0.209** | **0.083** |
-| Lorentz | MulSupCon | 0.175 | 0.069 |
-| Lorentz + MERU | MulSupCon | 0.178 | 0.072 |
-| Lorentz + MERU + DAG | MulSupCon | 0.180 | 0.076 |
+Start from
+`experiments/hyp_ssf_probe/ANALYSIS_READY_RESULTS.md` for the researcher-facing
+handoff and from `experiments/hyp_ssf_probe/report.md` section 4.0 for the full
+result registry.
 
-*v1 reference (InfoNCE, ESM2-8M, linear): Euclidean Fmax=0.075 / Lorentz+MERU Fmax=0.083*
+The primary baseline to compare against is:
+
+```text
+Frozen ESM2-650M protein features
++ frozen NeuML/pubmedbert-base-embeddings GO text embeddings
++ trainable MLP dual-encoder projection heads
++ BCEWithLogitsLoss(pos_weight = min(neg / pos, 100))
+```
+
+Paper-style GO subtask performance from Grace job `19181226`:
+
+| GO subtask | Fmax | AUPR | External ProtST-ESM-2 Fmax | External ProtST-ESM-2 AUPR |
+|---|---:|---:|---:|---:|
+| GO-MF | 0.6343 | 0.6320 | 0.6680 | 0.6470 |
+| GO-BP | 0.4643 | 0.3234 | 0.4820 | 0.3420 |
+| GO-CC | 0.5390 | 0.4214 | 0.4870 | 0.3640 |
+
+Conclusion: the clean supervised frozen dual encoder is the current baseline to
+beat. Static hyperbolic GO item embeddings are useful diagnostics, but the clean
+v2 geometry reruns do not beat the Euclidean controls strongly enough to make
+hyperbolic projection the primary predictor.
+
+## Clean v2 Geometry Diagnostic
+
+These rows are GO-MF-only geometry controls on the clean ESM2-650M / NeuML cache.
+They should be compared within loss family, not against the primary supervised
+baseline above.
+
+| Loss | Euclidean Fmax | Best hyperbolic Fmax | Interpretation |
+|---|---:|---:|---|
+| BCE | 0.1399 | 0.1545 | MERU helps BCE, but the absolute predictor is weak |
+| MulSupCon | 0.4149 | 0.3556 | Euclidean remains stronger |
 
 ## Data
+
+For analysis-ready GO-MF/BP/CC results, use the clean namespace caches under
+`experiments/hyp_ssf_probe/cache/`:
+
+| Cache family | Current clean files |
+|---|---|
+| GO-MF | `protst_go_mf_decoded.pt`, `go_mf_vocab.json`, `esm2_esm2_t33_650M_UR50D_protst_go_mf_feats.pt` |
+| GO-BP | `protst_go_bp_decoded.pt`, `go_bp_vocab.json`, `esm2_esm2_t33_650M_UR50D_protst_go_bp_feats.pt` |
+| GO-CC | `protst_go_cc_decoded.pt`, `go_cc_vocab.json`, `esm2_esm2_t33_650M_UR50D_protst_go_cc_feats.pt` |
+
+The older setup notes below describe the initial GO-MF prototype path and are
+kept for reproducibility context. For result interpretation, prefer
+`experiments/hyp_ssf_probe/ANALYSIS_READY_RESULTS.md`.
 
 ### Files tracked in this repository
 

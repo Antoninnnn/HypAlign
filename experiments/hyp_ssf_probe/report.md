@@ -1,6 +1,11 @@
 # Hyperbolic Embedding for Protein GO Function Prediction
 ## Preliminary Study: Does Hyperbolic Geometry + Entailment Improve GO-MF Retrieval?
 
+> Current baseline note, 2026-07-23: this report began as an exploratory
+> GO-MF/hyperbolic probe writeup. For analysis-ready baseline comparison, use
+> `ANALYSIS_READY_RESULTS.md` and section 4.0 below. Sections 1-3 and 4.1+
+> provide historical context for earlier geometry experiments.
+
 ---
 
 ## 1. Motivation and Principal
@@ -159,6 +164,10 @@ All metrics are computed zero-shot: the same [seq_head, text_head] weights from 
 
 Updated: 2026-07-23. This section is the result registry for Grace runs. `AUPR` in older JSON files is the legacy protein-centric threshold-sweep AUPR unless otherwise noted. For paper-style GO subtask comparison, use the clean CAFA/ProtST-style evaluator in `results/dual_encoder_cafa_metrics.json`, which reports GO-MF, GO-BP, and GO-CC separately with CAFA-style Fmax, micro-AUPR, macro-AUPR, weighted Fmax, and Smin.
 
+For researcher-facing analysis, start from `ANALYSIS_READY_RESULTS.md`. It
+defines the primary baseline, the external ProtST comparison, and which legacy
+runs should not be used as main baselines.
+
 **Current clean frozen Protein-GO dual-encoder baselines**
 
 These are the primary ProtST-style comparison rows. They use TorchDrug `GeneOntology.zip` namespace caches, frozen ESM2-650M features, frozen NeuML PubMedBERT GO text embeddings, trainable MLP projection heads, and BCE with `pos_weight = neg / pos` capped at 100. The old `PLIP` label means this dual-encoder baseline, not the pathology-image PLIP model.
@@ -189,15 +198,15 @@ Use this table when comparing directly against ProtST-style GO annotation subtas
 | GO-BP | Frozen ESM2-650M + NeuML dual encoder, BCE + capped `pos_weight` | 0.4643 | 0.3234 |
 | GO-CC | Frozen ESM2-650M + NeuML dual encoder, BCE + capped `pos_weight` | 0.5390 | 0.4214 |
 
-**ProtST paper-style Fmax comparison**
+**ProtST paper-style baseline comparison**
 
-These ProtST values are the relevant paper baseline for the current namespace-specific PDB-chain benchmark. The comparison below uses our CAFA-style Fmax from `dual_encoder_cafa_metrics.json`.
+These ProtST-ESM-2 values are the relevant paper baseline for the current namespace-specific PDB-chain benchmark. The comparison below uses our CAFA-style Fmax and micro-AUPR from `dual_encoder_cafa_metrics.json`.
 
-| Dataset | Our CAFA Fmax | ProtST-ESM2 Fmax | Gap |
-|---|---:|---:|---:|
-| GO-MF | 0.6343 | 0.6680 | -0.0337 |
-| GO-BP | 0.4643 | 0.4820 | -0.0177 |
-| GO-CC | 0.5390 | 0.4870 | +0.0520 |
+| Dataset | Our Fmax | ProtST-ESM-2 Fmax | Delta Fmax | Our AUPR | ProtST-ESM-2 AUPR | Delta AUPR |
+|---|---:|---:|---:|---:|---:|---:|
+| GO-MF | 0.6343 | 0.6680 | -0.0337 | 0.6320 | 0.6470 | -0.0150 |
+| GO-BP | 0.4643 | 0.4820 | -0.0177 | 0.3234 | 0.3420 | -0.0186 |
+| GO-CC | 0.5390 | 0.4870 | +0.0520 | 0.4214 | 0.3640 | +0.0574 |
 
 **Current clean GO-MF v2 geometry reruns**
 
@@ -253,7 +262,11 @@ These rows are not reproduced by our current code path; they are numbers shared 
 
 **Current interpretation:** the clean supervised frozen dual-encoder baseline is strong and close to ProtST on GO-MF/GO-BP while exceeding the ProtST Fmax reference on GO-CC. Static hyperbolic GO modeling does not beat Euclidean geometry on Fmax in the clean v2 runs. Hyperbolic/MERU remains useful as a structural diagnostic and possibly as a reasoning-path regularizer, but not as the current best predictor.
 
-### 4.1 Prediction Metrics
+### 4.1 Historical v1 Prediction Metrics
+
+The sections from 4.1 onward are historical v1 exploratory analysis from the
+early ESM2-8M / GO-MF-only probe. They are retained for provenance, but the
+analysis-ready baseline is section 4.0 and `ANALYSIS_READY_RESULTS.md`.
 
 ```
   Model                   Fmax    AUPR   wFmax  nDCG@10    MAP

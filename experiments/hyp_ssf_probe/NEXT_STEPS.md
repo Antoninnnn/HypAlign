@@ -1,6 +1,10 @@
 # Next Steps: GO Reasoning Experiments
 
-Updated: 2026-07-22.
+Updated: 2026-07-23.
+
+Use `ANALYSIS_READY_RESULTS.md` as the baseline handoff for all follow-up
+experiments. It defines the clean supervised dual-encoder baseline, the
+ProtST-ESM-2 comparison rows, and the non-comparable legacy runs.
 
 ## Current Decision
 
