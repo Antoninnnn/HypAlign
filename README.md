@@ -48,13 +48,21 @@ baseline above.
 ### Relationship Between `data/` and `cache/`
 
 `experiments/hyp_ssf_probe/data/` contains small tracked prototype artifacts
-from the early GO-MF-only experiments. In particular,
-`data/go_term_embs.pt` is a legacy `[489, 768]` GO-MF text embedding tensor kept
-in git for historical reproducibility.
+from the early GO-MF-only experiments. Their names now use the original Hugging
+Face dataset namespace `ProtST-GeneOntology-MF` to avoid confusion with current
+runtime caches.
+
+Original Hugging Face dataset IDs:
+
+| GO namespace | Hugging Face dataset ID |
+|---|---|
+| GO-MF | `mila-intel/ProtST-GeneOntology-MF` |
+| GO-BP | `mila-intel/ProtST-GeneOntology-BP` |
+| GO-CC | `mila-intel/ProtST-GeneOntology-CC` |
 
 `experiments/hyp_ssf_probe/cache/` contains generated runtime artifacts on Grace.
 The clean analysis-ready runs use the namespace-specific cache files there, not
-the tracked prototype `data/go_term_embs.pt`.
+the tracked prototype files under `data/`.
 
 Use these current text embedding caches for analysis:
 
@@ -81,8 +89,8 @@ kept for reproducibility context. For result interpretation, prefer
 
 | File | Size | Description |
 |------|------|-------------|
-| `experiments/hyp_ssf_probe/data/go_mf_vocab.json` | 64 KB | GO term ID ↔ index mapping (489 MF terms with 50–5000 annotations) |
-| `experiments/hyp_ssf_probe/data/go_term_embs.pt` | 1.5 MB | Legacy tracked GO-MF text embeddings for early prototype runs; not the current analysis-ready text cache |
+| `experiments/hyp_ssf_probe/data/protst_geneontology_mf_vocab_legacy.json` | 64 KB | Legacy tracked GO-MF vocabulary from `mila-intel/ProtST-GeneOntology-MF`; not the current analysis-ready cache |
+| `experiments/hyp_ssf_probe/data/protst_geneontology_mf_pubmedbert_cls_embs_legacy.pt` | 1.5 MB | Legacy tracked GO-MF text embeddings for early prototype runs; not the current analysis-ready text cache |
 | `experiments/hyp_ssf_probe/results/results_v2_bce.json` | tiny | Test Fmax/AUPR for v2 BCE conditions |
 | `experiments/hyp_ssf_probe/results/results_v2_msc.json` | tiny | Test Fmax/AUPR for v2 MulSupCon conditions |
 
@@ -119,9 +127,8 @@ targets   →  torch.tensor([0.0, 1.0, 0.0, ...])  →  stacked into [N, 489]
 Saved as: {'train': {'seqs': [...], 'targets': Tensor[N, 489]}, ...}
 ```
 
-The GO vocabulary (`go_mf_vocab.json`) maps GO IDs (e.g. `GO:0003700`) to
-integer indices 0–488, and stores the human-readable term names used as
-PubMedBERT input.
+The legacy GO-MF vocabulary maps GO IDs (e.g. `GO:0003700`) to integer indices
+0-488, and stores the human-readable term names used as PubMedBERT input.
 
 ## Reproducing on HPRC (TAMU Grace cluster)
 

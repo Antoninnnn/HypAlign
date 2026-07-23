@@ -39,7 +39,12 @@ All HuggingFace model weights are cached locally. ESM-2 150M is at
 
 ## Data
 
-The `cache/` directory is **not in git** (large binary files). Files needed:
+Historical note: the `cache/` directory is **not in git** (large binary files).
+The old GO-MF prototype used the generic names below. Current analysis-ready
+GO-MF/BP/CC runs use namespace-specific cache names documented in
+`experiments/hyp_ssf_probe/ANALYSIS_READY_RESULTS.md` and `README.md`.
+
+Legacy GO-MF files:
 
 | File | Size | How to get |
 |------|------|-----------|

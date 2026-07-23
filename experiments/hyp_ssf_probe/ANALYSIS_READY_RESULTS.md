@@ -91,8 +91,11 @@ reasoning/path-consistency module after a strong first-stage predictor.
 | Clean v2 BCE geometry JSON | `experiments/hyp_ssf_probe/results/results_v2_bce_cleanmf.json` |
 | Clean v2 MulSupCon geometry JSON | `experiments/hyp_ssf_probe/results/results_v2_msc_cleanmf.json` |
 
-Do not use `experiments/hyp_ssf_probe/data/go_term_embs.pt` for the current
-baseline; it is a tracked legacy GO-MF prototype tensor. The analysis-ready runs
+Do not use the tracked files under `experiments/hyp_ssf_probe/data/` for the
+current baseline. They are legacy GO-MF prototype artifacts renamed with the
+source dataset namespace:
+`protst_geneontology_mf_vocab_legacy.json` and
+`protst_geneontology_mf_pubmedbert_cls_embs_legacy.pt`. The analysis-ready runs
 use the namespace-specific `cache/go_terms_protst_go_*_NeuML...pt` files.
 
 ## What Not To Use As Main Baseline
