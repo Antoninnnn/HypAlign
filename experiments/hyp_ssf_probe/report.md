@@ -260,7 +260,7 @@ These rows are not reproduced by our current code path; they are numbers shared 
 | infonce_test | InfoNCE | 0.1479 | 0.4752 | 0.1193 | 0.5984 | 0.5350 | 0.6887 |
 | infonce_bigbatch_test | InfoNCE | 0.3169 | 0.0979 | 0.2647 | 0.6002 | 0.5320 | 0.6881 |
 
-**Current interpretation:** the clean supervised frozen dual-encoder baseline is strong and close to ProtST on GO-MF/GO-BP while exceeding the ProtST Fmax reference on GO-CC. Static hyperbolic GO modeling does not beat Euclidean geometry on Fmax in the clean v2 runs. Hyperbolic/MERU remains useful as a structural diagnostic and possibly as a reasoning-path regularizer, but not as the current best predictor.
+**Current interpretation:** the clean supervised frozen dual-encoder baseline is strong and close to ProtST-ESM-2 on GO-MF/GO-BP while exceeding the ProtST-ESM-2 Fmax and AUPR references on GO-CC. Static hyperbolic GO modeling does not beat Euclidean geometry on Fmax in the clean v2 runs. Hyperbolic/MERU remains useful as a structural diagnostic and possibly as a reasoning-path regularizer, but not as the current best predictor.
 
 ### 4.1 Historical v1 Prediction Metrics
 
